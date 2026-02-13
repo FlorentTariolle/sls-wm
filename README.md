@@ -3,7 +3,7 @@
 
 **Course:** Representation Learning
 
-**Architecture:** World Models (VAE + RNN + Controller)
+**Architecture:** World Models (VAE + GRU + Controller)
 
 ## 1. Project Overview
 DeepDash is a Deep Reinforcement Learning agent designed to master procedural *Geometry Dash* levels within a custom-built game engine. Unlike standard RL approaches that map pixels directly to actions, DeepDash explicitly separates **visual perception** from **control policy**.
@@ -20,9 +20,9 @@ The system is composed of three distinct neural networks trained sequentially:
 * **Relevance:** Demonstrates unsupervised feature extraction of game entities (spikes, blocks, player) from simplified semantic inputs.
 
 ### B. Memory Model (M) - *The Dynamics Learner*
-* **Type:** Deterministic Recurrent Neural Network (LSTM/GRU).
+* **Type:** Gated Recurrent Unit (GRU).
 * **Function:** Predicts the exact next latent state ($z_{t+1}$) given the current state ($z_t$) and action ($a_t$).
-* **Relevance:** Learns the rigid physics engine and temporal dynamics, allowing the agent to "hallucinate" precise trajectories without the noise of a probabilistic mixture model.
+* **Relevance:**  Learns the rigid physics engine and temporal dynamics using a computationally efficient RNN, allowing the agent to "hallucinate" precise trajectories without the complexity of LSTM gates.
 
 ### C. Controller (C) - *The Agent*
 * **Type:** Linear Single-Layer Perceptron.
