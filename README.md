@@ -46,10 +46,10 @@ The original architecture utilized a **Mixture Density Network (MDN)** to model 
 * **Benefit:** Eliminates sampling noise and "representation blurring," allowing for high-fidelity latent rollouts with significantly lower computational overhead.
 
 ### 4.2 Recurrent Efficiency (GRU vs. LSTM)
-The selection of the GRU over the standard LSTM is grounded in the architectural efficiency demonstrated by Cho et al. (2014) [cite_start][cite: 1, 15].
+The selection of the GRU over the standard LSTM is grounded in the architectural efficiency demonstrated by Cho et al. (2014).
 * **Observation:** The LSTM architecture requires four gating mechanisms, introducing redundant parameters for this specific task.
 * **Decision:** Implemented a Gated Recurrent Unit (GRU).
-* [cite_start]**Benefit:** The GRU's two-gate structure (Reset and Update) efficiently captures the necessary temporal dependencies (jump timing) while reducing training time and parameter count compared to an LSTM[cite: 86, 112, 115].
+* **Benefit:** The GRU's two-gate structure (Reset and Update) efficiently captures the necessary temporal dependencies (jump timing) while reducing training time and parameter count compared to an LSTM.
 
 ### 4.3 Inference Latency (Rejection of MPC)
 **Model Predictive Control (MPC)** was evaluated as a replacement for the Linear Controller.
@@ -64,13 +64,25 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 3.  **Policy Optimization:** The Controller (C) interacts solely with this hallucinated environment.
 4.  **Reset & Diversify:** Upon death or timeout, a new random 64-frame "seed" from a different level segment is loaded.
 
-## 5. Roadmap: From Engine to Reality
-The ultimate goal is to transfer the learned policy to the real *Geometry Dash* application without direct interaction, which is computationally prohibitive.
+## 5. Project Roadmap: Execution Strategy
+The training pipeline is structured to validate components individually before full integration.
 
-1.  **Phase 1 (Current):** Train V+M+C on the **Custom Engine** to validate the architecture on clean, semantic data.
-2.  **Phase 2 (Visual Adaptation):** Train a new Vision Model (V) and Memory Model (M) on **video recordings** of the real game. This teaches the system to encode the "sparky" visual aesthetics of the real game into the same latent physics logic.
-3.  **Phase 3 (Latent Transfer):** Train the Controller (C) inside the **Dreams of the Real Game Model**.
-    * *Reasoning:* Since the real game cannot run headless or at 10,000 FPS, we use the learned World Model as a proxy. The Controller learns to play the real game by playing inside the neural network's hallucination of it.
+### Phase 1: The "Sanity Check" (Real Custom Engine)
+* **Goal:** Validate the Vision Model (V) compression quality.
+* **Method:** Train the Controller (C) directly in the **Real Custom Engine**.
+* **Success Metric:** If the agent cannot learn to jump over a single spike in the real engine, the VAE is flawed.
+* **Status:** *Pre-requisite for Dream Training.*
+
+### Phase 2: The "World Model" (Latent Custom Engine)
+* **Goal:** Validate the Memory Model (M) dynamics and optimize training speed.
+* **Method:** Train the Controller (C) inside the **Dream** (Latent Space) using the Burn-In strategy.
+* **Advantage:** Massive parallelization ($10,000+$ FPS).
+* **Success Metric:** Agent masters procedural levels using only hallucinated physics.
+
+### Phase 3: The "Transfer" (Real Game Video Dreams)
+* **Goal:** Master the real *Geometry Dash* application.
+* **Method:** Train a new V and M on **video recordings** of the real game to handle "sparky" visual noise. Train the Controller inside the dreams of this new model.
+* **Deployment:** Run the trained Controller on the real game (Zero-Shot Transfer).
 
 ## 6. References
 * **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
