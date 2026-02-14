@@ -76,7 +76,7 @@ The training pipeline is structured to validate components individually before f
 ### Phase 2: The "World Model" (Latent Custom Engine)
 * **Goal:** Validate the Memory Model (M) dynamics and optimize training speed.
 * **Method:** Train the Controller (C) inside the **Dream** (Latent Space) using the Burn-In strategy.
-* **Advantage:** Massive parallelization ($10,000+$ FPS).
+* **Advantage:** Massive parallelization ($10{,}000+$ FPS).
 * **Success Metric:** Agent masters procedural levels using only hallucinated physics.
 
 ### Phase 3: The "Transfer" (Real Game Video Dreams)
@@ -84,7 +84,13 @@ The training pipeline is structured to validate components individually before f
 * **Method:** Train a new V and M on **video recordings** of the real game to handle "sparky" visual noise. Train the Controller inside the dreams of this new model.
 * **Deployment:** Run the trained Controller on the real game (Zero-Shot Transfer).
 
-## 6. References
+## 6. Benchmark Metrics
+The Phase 1 (Real Engine) and Phase 2 (Dream) training pipelines are evaluated on two complementary efficiency axes:
+
+* **Sample Efficiency (Quality):** Agent score after a fixed number of environment frames $N$. The Real Engine agent is expected to dominate this metric, as it trains on ground-truth physics free of compounding approximation error from the learned dynamics model.
+* **Wall-Clock Efficiency (Speed):** Agent score after a fixed training duration $T$. The Dream agent is expected to dominate this metric, as latent-space rollouts bypass the rendering pipeline entirely, enabling orders-of-magnitude higher throughput ($10{,}000+$ FPS vs. real-time).
+
+## 7. References
 * **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
 * **Recurrent Dynamics (GRU):** Cho, K., et al. (2014). *Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine Translation*. [arXiv:1406.1078](https://arxiv.org/abs/1406.1078)
 * **Foundational RL:** Mnih, V., et al. (2013). *Playing Atari with Deep Reinforcement Learning*. [arXiv:1312.5602](https://arxiv.org/abs/1312.5602)
