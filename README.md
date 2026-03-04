@@ -18,7 +18,14 @@ The system is composed of three distinct neural networks trained sequentially:
 
 ### A. Vision Model (V) - *The Representation Learner*
 * **Type:** Variational Autoencoder (VAE).
-* **Input:** Raw RGB frames ($64 \times 64 \times 3$) captured from real *Geometry Dash* gameplay.
+* **Input:** Preprocessed RGB frames ($176 \times 96 \times 3$) captured from real *Geometry Dash* gameplay.
+* **Preprocessing Pipeline:**
+
+| Raw frame (640×360) | UI cropped (640×342) | Downscaled (176×96) |
+|:---:|:---:|:---:|
+| ![Original](docs/preprocessing_1_original.png) | ![Cropped](docs/preprocessing_2_cropped.png) | ![Downscaled](docs/preprocessing_3_downscaled.png) |
+
+  Raw 360p footage is first cropped (top 18px removed) to discard the UI bar (progress indicator, percentage), then resized to $176 \times 96$. The rectangular format preserves the game's native aspect ratio — unlike the original paper's $64 \times 64$ square input — preventing spatial distortion of the horizontal obstacle field. The UI is deliberately excluded to prevent the model from memorizing level layouts via the progress indicator, forcing it to learn **reactive dynamics** rather than positional lookup.
 * **Function:** Compresses visual data into a low-dimensional latent vector ($z \in \mathbb{R}^{32}$).
 * **Noise Filtering:** Real game footage contains high-frequency stochastic noise (particles, weather effects, visual polish). To reject this without contrastive learning bloat, the Vision Model is structurally modified:
     * **Aggressive Spatial Downsampling:** Deep convolutional layers with Max Pooling to physically eradicate sub-pixel noise prior to the latent bottleneck.
@@ -60,7 +67,14 @@ The selection of the GRU over the standard LSTM is grounded in the architectural
 * **Decision:** Retained the reactive Linear Controller ($Action = W \cdot [z, h]$).
 * **Benefit:** Ensures $O(1)$ inference time, preventing input lag that would otherwise cause agent failure in a high-speed reaction environment.
 
-### 3.4 Training Protocol: The "Dreaming" Loop
+### 3.4 Input Preprocessing (176×96, UI Cropping)
+The original World Models paper uses $64 \times 64$ square inputs. This project departs from that convention.
+* **Observation:** *Geometry Dash* renders in 16:9 widescreen. The horizontal axis carries the critical information (upcoming obstacles). Squashing to a square distorts spatial relationships and compresses the obstacle field.
+* **Decision:** The top 18 pixels of UI are cropped (640×360 → 640×342), then resized to $176 \times 96$. Both dimensions are divisible by 16, allowing 4 stride-2 downsampling layers (176×96 → 88×48 → 44×24 → 22×12 → 11×6) — matching the original paper's encoder depth on $64 \times 64$ input.
+* **Benefit (Aspect Ratio):** Preserves the spatial geometry of platforms and obstacle spacing at a comparable pixel budget (~17K pixels vs. ~16K for $128 \times 128$).
+* **Benefit (UI Removal):** The progress bar encodes the player's absolute position within a specific level. Retaining it would allow the model to memorize level layouts ("at 47%, a triple spike appears") rather than learning **reactive obstacle dynamics**. Removing it forces the agent to rely solely on visual obstacle perception, producing a more generalizable policy and a stronger demonstration of learned representation.
+
+### 3.5 Training Protocol: The "Dreaming" Loop
 To overcome the limitations of deterministic generation (Mode Collapse), the agent is trained using an **Iterative Burn-In Strategy**:
 1.  **Context Injection (Burn-In):** The Memory Model (M) is primed with a sequence of $T=64$ real frames from recorded gameplay. This "seeds" the RNN hidden state ($h_t$) with the position and velocity of incoming obstacles.
 2.  **Latent Extrapolation (Dreaming):** The real footage is disconnected. The Memory Model takes over, extrapolating the physics of the seeded obstacles for $T=100+$ steps.
