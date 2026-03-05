@@ -17,7 +17,7 @@ ENCODER_SPATIAL = (6, 11)
 ENCODER_OUT_CHANNELS = 256
 FLATTEN_DIM = ENCODER_OUT_CHANNELS * ENCODER_SPATIAL[0] * ENCODER_SPATIAL[1]  # 16896
 
-SKIP_CHANNELS = 4  # bottleneck channels for each skip connection
+SKIP_CHANNELS = 1  # bottleneck channels for each skip connection
 
 
 class Encoder(nn.Module):
