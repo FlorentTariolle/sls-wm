@@ -1,8 +1,8 @@
-"""U-Net Variational Autoencoder for Geometry Dash edge-map compression.
+"""Variational Autoencoder for Geometry Dash edge-map compression.
 
 Adapted from World Models (Ha & Schmidhuber, 2018) for 176x96 input.
 Encoder: 4 stride-2 conv layers (176x96 -> 11x6 spatial)
-Decoder: mirror with transposed convolutions + bandwidth-limited skip connections
+Decoder: mirror with transposed convolutions
 Latent: 256-dimensional Gaussian (mu, logvar)
 """
 
@@ -17,51 +17,48 @@ ENCODER_SPATIAL = (6, 11)
 ENCODER_OUT_CHANNELS = 256
 FLATTEN_DIM = ENCODER_OUT_CHANNELS * ENCODER_SPATIAL[0] * ENCODER_SPATIAL[1]  # 16896
 
-SKIP_CHANNELS = 1  # bottleneck channels for each skip connection
-
 
 class Encoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super().__init__()
-        self.conv1 = nn.Sequential(nn.Conv2d(IMG_CHANNELS, 32, 4, stride=2, padding=1), nn.ReLU())
-        self.conv2 = nn.Sequential(nn.Conv2d(32, 64, 4, stride=2, padding=1), nn.ReLU())
-        self.conv3 = nn.Sequential(nn.Conv2d(64, 128, 4, stride=2, padding=1), nn.ReLU())
-        self.conv4 = nn.Sequential(nn.Conv2d(128, ENCODER_OUT_CHANNELS, 4, stride=2, padding=1), nn.ReLU())
+        self.conv = nn.Sequential(
+            nn.Conv2d(IMG_CHANNELS, 32, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(32, 64, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(64, 128, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.Conv2d(128, ENCODER_OUT_CHANNELS, 4, stride=2, padding=1),
+            nn.ReLU(),
+        )
         self.fc_mu = nn.Linear(FLATTEN_DIM, latent_dim)
         self.fc_logvar = nn.Linear(FLATTEN_DIM, latent_dim)
-        # 1x1 conv to squeeze skip bandwidth
-        self.skip_squeeze1 = nn.Conv2d(32, SKIP_CHANNELS, 1)
-        self.skip_squeeze2 = nn.Conv2d(64, SKIP_CHANNELS, 1)
-        self.skip_squeeze3 = nn.Conv2d(128, SKIP_CHANNELS, 1)
 
     def forward(self, x):
-        s1 = self.conv1(x)    # (B, 32, 48, 88)
-        s2 = self.conv2(s1)   # (B, 64, 24, 44)
-        s3 = self.conv3(s2)   # (B, 128, 12, 22)
-        h = self.conv4(s3)    # (B, 256, 6, 11)
-        flat = h.view(h.size(0), -1)
-        skips = [self.skip_squeeze1(s1), self.skip_squeeze2(s2), self.skip_squeeze3(s3)]
-        return self.fc_mu(flat), self.fc_logvar(flat), skips
+        h = self.conv(x)
+        h = h.view(h.size(0), -1)
+        return self.fc_mu(h), self.fc_logvar(h)
 
 
 class Decoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super().__init__()
         self.fc = nn.Linear(latent_dim, FLATTEN_DIM)
-        self.deconv1 = nn.Sequential(nn.ConvTranspose2d(ENCODER_OUT_CHANNELS, 128, 4, stride=2, padding=1), nn.ReLU())
-        self.deconv2 = nn.Sequential(nn.ConvTranspose2d(128 + SKIP_CHANNELS, 64, 4, stride=2, padding=1), nn.ReLU())
-        self.deconv3 = nn.Sequential(nn.ConvTranspose2d(64 + SKIP_CHANNELS, 32, 4, stride=2, padding=1), nn.ReLU())
-        self.deconv4 = nn.Sequential(nn.ConvTranspose2d(32 + SKIP_CHANNELS, IMG_CHANNELS, 4, stride=2, padding=1), nn.Sigmoid())
+        self.deconv = nn.Sequential(
+            nn.ConvTranspose2d(ENCODER_OUT_CHANNELS, 128, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
+            nn.ReLU(),
+            nn.ConvTranspose2d(32, IMG_CHANNELS, 4, stride=2, padding=1),
+            nn.Sigmoid(),
+        )
 
-    def forward(self, z, skips):
-        s1, s2, s3 = skips
+    def forward(self, z):
         h = self.fc(z)
         h = h.view(h.size(0), ENCODER_OUT_CHANNELS, *ENCODER_SPATIAL)
-        h = self.deconv1(h)
-        h = self.deconv2(torch.cat([h, s3], dim=1))
-        h = self.deconv3(torch.cat([h, s2], dim=1))
-        h = self.deconv4(torch.cat([h, s1], dim=1))
-        return h
+        return self.deconv(h)
 
 
 class VAE(nn.Module):
@@ -78,13 +75,13 @@ class VAE(nn.Module):
         return mu
 
     def forward(self, x):
-        mu, logvar, skips = self.encoder(x)
+        mu, logvar = self.encoder(x)
         z = self.reparameterize(mu, logvar)
-        recon = self.decoder(z, skips)
+        recon = self.decoder(z)
         return recon, mu, logvar
 
     def encode(self, x):
-        mu, logvar, _ = self.encoder(x)
+        mu, logvar = self.encoder(x)
         return self.reparameterize(mu, logvar)
 
 
