@@ -37,10 +37,14 @@ class Encoder(nn.Module):
         return self.fc_mu(flat), self.fc_logvar(flat), [s1, s2, s3]
 
 
+SKIP_DROPOUT = 0.4
+
+
 class Decoder(nn.Module):
     def __init__(self, latent_dim=LATENT_DIM):
         super().__init__()
         self.fc = nn.Linear(latent_dim, FLATTEN_DIM)
+        self.skip_drop = nn.Dropout2d(SKIP_DROPOUT)
         # Each deconv input doubles channels to account for skip concatenation
         self.deconv1 = nn.Sequential(nn.ConvTranspose2d(ENCODER_OUT_CHANNELS, 128, 4, stride=2, padding=1), nn.ReLU())
         self.deconv2 = nn.Sequential(nn.ConvTranspose2d(128 + 128, 64, 4, stride=2, padding=1), nn.ReLU())
@@ -51,10 +55,10 @@ class Decoder(nn.Module):
         s1, s2, s3 = skips
         h = self.fc(z)
         h = h.view(h.size(0), ENCODER_OUT_CHANNELS, *ENCODER_SPATIAL)
-        h = self.deconv1(h)              # (B, 128, 12, 22)
-        h = self.deconv2(torch.cat([h, s3], dim=1))  # (B, 128+128, 12, 22) -> (B, 64, 24, 44)
-        h = self.deconv3(torch.cat([h, s2], dim=1))  # (B, 64+64, 24, 44) -> (B, 32, 48, 88)
-        h = self.deconv4(torch.cat([h, s1], dim=1))  # (B, 32+32, 48, 88) -> (B, 1, 96, 176)
+        h = self.deconv1(h)
+        h = self.deconv2(torch.cat([h, self.skip_drop(s3)], dim=1))
+        h = self.deconv3(torch.cat([h, self.skip_drop(s2)], dim=1))
+        h = self.deconv4(torch.cat([h, self.skip_drop(s1)], dim=1))
         return h
 
 
