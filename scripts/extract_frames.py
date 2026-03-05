@@ -33,11 +33,15 @@ def extract_frames(video_dir: str, output_dir: str, every_n: int = 5, crop_top: 
                 cropped = frame[crop_top:, :, :]
                 # Resize to target
                 resized = cv2.resize(cropped, target_size, interpolation=cv2.INTER_AREA)
-                # Convert to grayscale
+                # Convert to grayscale then Sobel edges
                 gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+                gx = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
+                gy = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
+                edges = np.sqrt(gx**2 + gy**2)
+                edges = np.clip(edges / edges.max() * 255, 0, 255).astype(np.uint8) if edges.max() > 0 else edges.astype(np.uint8)
                 # Save as PNG
                 filename = f"{level_name}_{frame_idx:06d}.png"
-                cv2.imwrite(str(output_dir / filename), gray)
+                cv2.imwrite(str(output_dir / filename), edges)
                 saved += 1
             frame_idx += 1
 
