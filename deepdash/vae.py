@@ -1,71 +1,64 @@
-"""Variational Autoencoder for Geometry Dash edge-map compression.
+"""Variational Autoencoder for Geometry Dash frame compression.
 
-Adapted from World Models (Ha & Schmidhuber, 2018) for 176x96 input.
-Encoder: 4 stride-2 conv layers (176x96 -> 11x6 spatial)
-Decoder: mirror with transposed convolutions
-Latent: 256-dimensional Gaussian (mu, logvar)
+Matches the World Models paper (Ha & Schmidhuber, 2018) and ctallec/world-models PyTorch reimplementation:
+  - Input: 64x64x3 RGB
+  - Encoder: 4 no-padding stride-2 conv layers (64→31→14→6→2), flatten to 1024
+  - Decoder: asymmetric — 1×1×1024 upsampled with 5×5/6×6 transposed convs
+  - Latent: 32-dimensional Gaussian (mu, logvar)
+  - Loss: MSE + KL with tolerance floor (0.5 nats/dim)
 """
 
 import torch
 import torch.nn as nn
 
 
-LATENT_DIM = 256
+LATENT_DIM = 32
 IMG_CHANNELS = 1
-# Spatial dims after encoder (H, W): 96/16=6, 176/16=11
-ENCODER_SPATIAL = (6, 11)
-ENCODER_OUT_CHANNELS = 256
-FLATTEN_DIM = ENCODER_OUT_CHANNELS * ENCODER_SPATIAL[0] * ENCODER_SPATIAL[1]  # 16896
+FLATTEN_DIM = 2 * 2 * 256  # 1024 — no padding encoder: 64→31→14→6→2
 
 
 class Encoder(nn.Module):
-    def __init__(self, latent_dim=LATENT_DIM):
+    def __init__(self, img_channels=IMG_CHANNELS, latent_dim=LATENT_DIM):
         super().__init__()
-        self.conv = nn.Sequential(
-            nn.Conv2d(IMG_CHANNELS, 32, 4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(32, 64, 4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(64, 128, 4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.Conv2d(128, ENCODER_OUT_CHANNELS, 4, stride=2, padding=1),
-            nn.ReLU(),
-        )
+        self.conv1 = nn.Conv2d(img_channels, 32, 4, stride=2)
+        self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
+        self.conv3 = nn.Conv2d(64, 128, 4, stride=2)
+        self.conv4 = nn.Conv2d(128, 256, 4, stride=2)
         self.fc_mu = nn.Linear(FLATTEN_DIM, latent_dim)
         self.fc_logvar = nn.Linear(FLATTEN_DIM, latent_dim)
 
     def forward(self, x):
-        h = self.conv(x)
-        h = h.view(h.size(0), -1)
-        return self.fc_mu(h), self.fc_logvar(h)
+        x = torch.relu(self.conv1(x))
+        x = torch.relu(self.conv2(x))
+        x = torch.relu(self.conv3(x))
+        x = torch.relu(self.conv4(x))
+        x = x.view(x.size(0), -1)
+        return self.fc_mu(x), self.fc_logvar(x)
 
 
 class Decoder(nn.Module):
-    def __init__(self, latent_dim=LATENT_DIM):
+    def __init__(self, img_channels=IMG_CHANNELS, latent_dim=LATENT_DIM):
         super().__init__()
-        self.fc = nn.Linear(latent_dim, FLATTEN_DIM)
-        self.deconv = nn.Sequential(
-            nn.ConvTranspose2d(ENCODER_OUT_CHANNELS, 128, 4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1),
-            nn.ReLU(),
-            nn.ConvTranspose2d(32, IMG_CHANNELS, 4, stride=2, padding=1),
-            nn.Sigmoid(),
-        )
+        self.fc = nn.Linear(latent_dim, 1024)
+        self.deconv1 = nn.ConvTranspose2d(1024, 128, 5, stride=2)
+        self.deconv2 = nn.ConvTranspose2d(128, 64, 5, stride=2)
+        self.deconv3 = nn.ConvTranspose2d(64, 32, 6, stride=2)
+        self.deconv4 = nn.ConvTranspose2d(32, img_channels, 6, stride=2)
 
     def forward(self, z):
-        h = self.fc(z)
-        h = h.view(h.size(0), ENCODER_OUT_CHANNELS, *ENCODER_SPATIAL)
-        return self.deconv(h)
+        x = torch.relu(self.fc(z))
+        x = x.unsqueeze(-1).unsqueeze(-1)
+        x = torch.relu(self.deconv1(x))
+        x = torch.relu(self.deconv2(x))
+        x = torch.relu(self.deconv3(x))
+        return torch.sigmoid(self.deconv4(x))
 
 
 class VAE(nn.Module):
-    def __init__(self, latent_dim=LATENT_DIM):
+    def __init__(self, img_channels=IMG_CHANNELS, latent_dim=LATENT_DIM):
         super().__init__()
-        self.encoder = Encoder(latent_dim)
-        self.decoder = Decoder(latent_dim)
+        self.encoder = Encoder(img_channels, latent_dim)
+        self.decoder = Decoder(img_channels, latent_dim)
 
     def reparameterize(self, mu, logvar):
         if self.training:
@@ -85,13 +78,16 @@ class VAE(nn.Module):
         return self.reparameterize(mu, logvar)
 
 
-def vae_loss(recon_x, x, mu, logvar, beta=1.0, pos_weight=20.0):
-    """Weighted BCE reconstruction + beta-weighted KL divergence.
+def vae_loss(recon_x, x, mu, logvar, kl_tolerance=0.5):
+    """MSE reconstruction + KL divergence with tolerance floor.
 
-    pos_weight compensates for sparse edge maps (~5% white pixels)
-    by penalizing missed edges much more than false positives.
+    Matches the World Models paper: KL per sample is clamped to a minimum
+    of kl_tolerance * z_size (0.5 * 32 = 16 nats), preventing posterior
+    collapse while allowing each latent dim to encode at least 0.5 nats.
     """
-    weight = torch.where(x > 0.1, pos_weight, 1.0)
-    recon_loss = nn.functional.binary_cross_entropy(recon_x, x, weight=weight, reduction='mean')
-    kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-    return recon_loss + beta * kl_loss, recon_loss, kl_loss
+    # MSE: sum over pixels per sample, mean over batch
+    recon_loss = torch.sum((recon_x - x) ** 2, dim=[1, 2, 3]).mean()
+    # KL: sum over latent dims per sample, apply tolerance floor, mean over batch
+    kl_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
+    kl_loss = torch.maximum(kl_per_sample, torch.tensor(kl_tolerance * mu.size(1))).mean()
+    return recon_loss + kl_loss, recon_loss, kl_loss
