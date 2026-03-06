@@ -32,11 +32,12 @@ def main():
     parser.add_argument("--output-dir", default="eval_output")
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--model", choices=["vae", "vqvae"], default="vqvae")
+    parser.add_argument("--embedding-dim", type=int, default=64, help="Codebook vector dimension (must match checkpoint)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if args.model == "vqvae":
-        model = VQVAE()
+        model = VQVAE(embedding_dim=args.embedding_dim)
     else:
         model = VAE()
     model.load_state_dict(torch.load(args.checkpoint, map_location=device, weights_only=True))
