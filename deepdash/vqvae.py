@@ -32,11 +32,19 @@ class VectorQuantizer(nn.Module):
         # EMA tracking
         self.register_buffer('ema_cluster_size', torch.zeros(num_embeddings))
         self.register_buffer('ema_weight', self.embedding.weight.data.clone())
+        self.register_buffer('initialized', torch.tensor(False))
 
     def forward(self, z_e):
         # z_e: (B, D, H, W)
         B, D, H, W = z_e.shape
         z_e_flat = z_e.permute(0, 2, 3, 1).reshape(-1, D)
+
+        # Initialize codebook from first batch of encoder outputs
+        if self.training and not self.initialized:
+            rand_idx = torch.randint(0, z_e_flat.shape[0], (self.num_embeddings,))
+            self.embedding.weight.data.copy_(z_e_flat[rand_idx].detach())
+            self.ema_weight.copy_(self.embedding.weight.data)
+            self.initialized.fill_(True)
 
         # Squared distances to codebook vectors
         distances = (
