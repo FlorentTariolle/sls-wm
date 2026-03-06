@@ -22,13 +22,13 @@ def make_loader(data_dir, batch_size, shuffle=True):
     return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=2, pin_memory=True)
 
 
-def train_epoch(model, loader, optimizer, device):
+def train_epoch(model, loader, optimizer, device, beta=1.0):
     model.train()
     total_loss, total_recon, total_kl, n = 0, 0, 0, 0
     for imgs, _ in loader:
         imgs = imgs.to(device)
         recon, mu, logvar = model(imgs)
-        loss, recon_l, kl_l = vae_loss(recon, imgs, mu, logvar)
+        loss, recon_l, kl_l = vae_loss(recon, imgs, mu, logvar, beta=beta)
         optimizer.zero_grad()
         loss.backward()
         optimizer.step()
@@ -41,13 +41,13 @@ def train_epoch(model, loader, optimizer, device):
 
 
 @torch.no_grad()
-def val_epoch(model, loader, device):
+def val_epoch(model, loader, device, beta=1.0):
     model.eval()
     total_loss, total_recon, total_kl, n = 0, 0, 0, 0
     for imgs, _ in loader:
         imgs = imgs.to(device)
         recon, mu, logvar = model(imgs)
-        loss, recon_l, kl_l = vae_loss(recon, imgs, mu, logvar)
+        loss, recon_l, kl_l = vae_loss(recon, imgs, mu, logvar, beta=beta)
         bs = imgs.size(0)
         total_loss += loss.item() * bs
         total_recon += recon_l.item() * bs
@@ -64,6 +64,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-3)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from (e.g. checkpoints/vae_best.pt)")
+    parser.add_argument("--beta", type=float, default=1.0, help="KL weight (beta < 1 for sharper reconstructions)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -117,8 +118,8 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
-        train_loss, train_recon, train_kl = train_epoch(model, train_loader, optimizer, device)
-        val_loss, val_recon, val_kl = val_epoch(model, val_loader, device)
+        train_loss, train_recon, train_kl = train_epoch(model, train_loader, optimizer, device, beta=args.beta)
+        val_loss, val_recon, val_kl = val_epoch(model, val_loader, device, beta=args.beta)
         scheduler.step(val_recon)
         dt = time.time() - t0
         lr = optimizer.param_groups[0]["lr"]

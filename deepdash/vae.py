@@ -78,7 +78,7 @@ class VAE(nn.Module):
         return self.reparameterize(mu, logvar)
 
 
-def vae_loss(recon_x, x, mu, logvar, kl_tolerance=0.5, pos_weight=20.0):
+def vae_loss(recon_x, x, mu, logvar, kl_tolerance=0.5, pos_weight=20.0, beta=1.0):
     """Weighted BCE reconstruction + KL divergence with tolerance floor."""
     bce = torch.nn.functional.binary_cross_entropy(recon_x, x, reduction='none')
     weight = torch.where(x > 0.5, pos_weight, 1.0)
@@ -86,4 +86,4 @@ def vae_loss(recon_x, x, mu, logvar, kl_tolerance=0.5, pos_weight=20.0):
     # KL: sum over latent dims per sample, apply tolerance floor, mean over batch
     kl_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
     kl_loss = torch.maximum(kl_per_sample, torch.tensor(kl_tolerance * mu.size(1))).mean()
-    return recon_loss + kl_loss, recon_loss, kl_loss
+    return recon_loss + beta * kl_loss, recon_loss, kl_loss
