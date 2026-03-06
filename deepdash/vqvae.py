@@ -3,6 +3,7 @@
 Replaces the Gaussian latent with a discrete codebook.
 No KL divergence = no blurriness from posterior averaging.
 Spatial latent: 8x8 grid of codebook indices (64 tokens per frame).
+Uses EMA codebook updates for training stability.
 """
 
 import torch
@@ -16,14 +17,20 @@ IMG_CHANNELS = 1
 
 class VectorQuantizer(nn.Module):
     def __init__(self, num_embeddings=NUM_EMBEDDINGS, embedding_dim=EMBEDDING_DIM,
-                 commitment_cost=0.25):
+                 commitment_cost=0.25, decay=0.99):
         super().__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
         self.commitment_cost = commitment_cost
+        self.decay = decay
 
         self.embedding = nn.Embedding(num_embeddings, embedding_dim)
-        self.embedding.weight.data.uniform_(-1 / num_embeddings, 1 / num_embeddings)
+        self.embedding.weight.data.normal_()
+        self.embedding.weight.requires_grad = False  # updated via EMA, not gradients
+
+        # EMA tracking
+        self.register_buffer('ema_cluster_size', torch.zeros(num_embeddings))
+        self.register_buffer('ema_weight', self.embedding.weight.data.clone())
 
     def forward(self, z_e):
         # z_e: (B, D, H, W)
@@ -39,17 +46,34 @@ class VectorQuantizer(nn.Module):
 
         # Nearest codebook entry
         indices = distances.argmin(dim=1)
+        encodings = torch.zeros(indices.shape[0], self.num_embeddings, device=z_e.device)
+        encodings.scatter_(1, indices.unsqueeze(1), 1)
+
         z_q_flat = self.embedding(indices)
 
-        # Codebook loss: move codebook vectors towards encoder outputs
-        vq_loss = (z_q_flat - z_e_flat.detach()).pow(2).mean()
-        # Commitment loss: encourage encoder to commit to codebook entries
+        # EMA codebook update (training only)
+        if self.training:
+            self.ema_cluster_size.mul_(self.decay).add_(
+                encodings.sum(0), alpha=1 - self.decay
+            )
+            dw = encodings.t() @ z_e_flat
+            self.ema_weight.mul_(self.decay).add_(dw, alpha=1 - self.decay)
+
+            # Laplace smoothing to avoid division by zero
+            n = self.ema_cluster_size.sum()
+            cluster_size = (
+                (self.ema_cluster_size + 1e-5) /
+                (n + self.num_embeddings * 1e-5) * n
+            )
+            self.embedding.weight.data.copy_(self.ema_weight / cluster_size.unsqueeze(1))
+
+        # Commitment loss only (codebook updated via EMA, not gradient)
         commit_loss = (z_e_flat - z_q_flat.detach()).pow(2).mean()
 
         # Straight-through estimator
         z_q = z_e + (z_q_flat.reshape(B, H, W, D).permute(0, 3, 1, 2) - z_e).detach()
 
-        return z_q, vq_loss + self.commitment_cost * commit_loss, indices.reshape(B, H, W)
+        return z_q, self.commitment_cost * commit_loss, indices.reshape(B, H, W)
 
 
 class ResBlock(nn.Module):
