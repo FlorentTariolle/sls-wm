@@ -65,6 +65,8 @@ def main():
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from (e.g. checkpoints/vae_best.pt)")
     parser.add_argument("--beta", type=float, default=1.0, help="KL weight (beta < 1 for sharper reconstructions)")
+    parser.add_argument("--cyclical", action="store_true", help="Use cyclical KL annealing (overrides --beta)")
+    parser.add_argument("--cycles", type=int, default=4, help="Number of annealing cycles")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -118,8 +120,13 @@ def main():
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
-        train_loss, train_recon, train_kl = train_epoch(model, train_loader, optimizer, device, beta=args.beta)
-        val_loss, val_recon, val_kl = val_epoch(model, val_loader, device, beta=args.beta)
+        if args.cyclical:
+            cycle_len = args.epochs / args.cycles
+            beta = min(1.0, (((epoch - 1) % cycle_len) / (cycle_len / 2)))
+        else:
+            beta = args.beta
+        train_loss, train_recon, train_kl = train_epoch(model, train_loader, optimizer, device, beta=beta)
+        val_loss, val_recon, val_kl = val_epoch(model, val_loader, device, beta=beta)
         scheduler.step(val_recon)
         dt = time.time() - t0
         lr = optimizer.param_groups[0]["lr"]
@@ -128,7 +135,7 @@ def main():
             f"Epoch {epoch:3d}/{args.epochs} ({dt:.1f}s) | "
             f"Train: {train_loss:.4f} (recon={train_recon:.4f}, kl={train_kl:.4f}) | "
             f"Val: {val_loss:.4f} (recon={val_recon:.4f}, kl={val_kl:.4f}) | "
-            f"LR: {lr:.1e}"
+            f"LR: {lr:.1e}" + (f" | β: {beta:.3f}" if args.cyclical else "")
         )
 
         log_writer.writerow([epoch, f"{train_loss:.6f}", f"{train_recon:.6f}", f"{train_kl:.6f}", f"{val_loss:.6f}", f"{val_recon:.6f}", f"{val_kl:.6f}", f"{lr:.1e}", f"{dt:.1f}"])
