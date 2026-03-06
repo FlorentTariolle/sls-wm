@@ -78,15 +78,15 @@ class VAE(nn.Module):
         return self.reparameterize(mu, logvar)
 
 
-def vae_loss(recon_x, x, mu, logvar, kl_tolerance=0.5):
-    """MSE reconstruction + KL divergence with tolerance floor.
+def vae_loss(recon_x, x, mu, logvar, kl_tolerance=0.5, pos_weight=20.0):
+    """Weighted BCE reconstruction + KL divergence with tolerance floor.
 
-    Matches the World Models paper: KL per sample is clamped to a minimum
-    of kl_tolerance * z_size (0.5 * 32 = 16 nats), preventing posterior
-    collapse while allowing each latent dim to encode at least 0.5 nats.
+    pos_weight upweights white edge pixels to prevent the model from
+    outputting mostly black on sparse Sobel edge maps.
     """
-    # MSE: sum over pixels per sample, mean over batch
-    recon_loss = torch.sum((recon_x - x) ** 2, dim=[1, 2, 3]).mean()
+    bce = torch.nn.functional.binary_cross_entropy(recon_x, x, reduction='none')
+    weight = torch.where(x > 0.5, pos_weight, 1.0)
+    recon_loss = (bce * weight).sum(dim=[1, 2, 3]).mean()
     # KL: sum over latent dims per sample, apply tolerance floor, mean over batch
     kl_per_sample = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1)
     kl_loss = torch.maximum(kl_per_sample, torch.tensor(kl_tolerance * mu.size(1))).mean()
