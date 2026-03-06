@@ -7,19 +7,30 @@ import time
 from pathlib import Path
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from torchvision.datasets import ImageFolder
+from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.vqvae import VQVAE, vqvae_loss
 
 
+class FlatImageDataset(Dataset):
+    def __init__(self, data_dir):
+        files = sorted(Path(data_dir).rglob("*.png"))
+        transform = transforms.Compose([transforms.Grayscale(), transforms.ToTensor()])
+        self.imgs = [transform(Image.open(f)) for f in files]
+
+    def __len__(self):
+        return len(self.imgs)
+
+    def __getitem__(self, idx):
+        return self.imgs[idx], 0
+
+
 def make_loader(data_dir, batch_size, shuffle=True):
-    """Load PNG frames as normalized [0,1] tensors."""
-    transform = transforms.Compose([transforms.Grayscale(), transforms.ToTensor()])
-    dataset = ImageFolder(data_dir, transform=transform)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=2, pin_memory=True)
+    dataset = FlatImageDataset(data_dir)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0, pin_memory=True)
 
 
 def train_epoch(model, loader, optimizer, device):
@@ -72,26 +83,8 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    train_dir = Path(args.data_dir) / "train"
-    val_dir = Path(args.data_dir) / "val"
-
-    # ImageFolder expects subdirs — create wrapper if frames are flat
-    train_pngs = list(train_dir.glob("*.png"))
-    if train_pngs:
-        wrapper_train = train_dir / "0"
-        wrapper_val = val_dir / "0"
-        if not wrapper_train.exists():
-            print("ImageFolder requires class subdirs. Creating wrapper dirs...")
-            wrapper_train.mkdir()
-            wrapper_val.mkdir()
-            for p in train_dir.glob("*.png"):
-                p.rename(wrapper_train / p.name)
-            for p in val_dir.glob("*.png"):
-                p.rename(wrapper_val / p.name)
-            print("Done.")
-
-    train_loader = make_loader(str(train_dir), args.batch_size, shuffle=True)
-    val_loader = make_loader(str(val_dir), args.batch_size, shuffle=False)
+    train_loader = make_loader(str(Path(args.data_dir) / "train"), args.batch_size, shuffle=True)
+    val_loader = make_loader(str(Path(args.data_dir) / "val"), args.batch_size, shuffle=False)
     print(f"Train: {len(train_loader.dataset)} images, Val: {len(val_loader.dataset)} images")
 
     model = VQVAE(
