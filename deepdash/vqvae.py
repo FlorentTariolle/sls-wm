@@ -2,6 +2,7 @@
 
 Replaces the Gaussian latent with a discrete codebook.
 No KL divergence = no blurriness from posterior averaging.
+Spatial latent: 8x8 grid of codebook indices (64 tokens per frame).
 """
 
 import torch
@@ -51,43 +52,54 @@ class VectorQuantizer(nn.Module):
         return z_q, vq_loss + self.commitment_cost * commit_loss, indices.reshape(B, H, W)
 
 
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, 3, padding=1)
+        self.conv2 = nn.Conv2d(channels, channels, 3, padding=1)
+
+    def forward(self, x):
+        return x + torch.relu(self.conv2(torch.relu(self.conv1(x))))
+
+
 class Encoder(nn.Module):
     def __init__(self, img_channels=IMG_CHANNELS, embedding_dim=EMBEDDING_DIM):
         super().__init__()
-        # Same conv backbone as VAE: 64 -> 31 -> 14 -> 6 -> 2
-        self.conv1 = nn.Conv2d(img_channels, 32, 4, stride=2)
-        self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
-        self.conv3 = nn.Conv2d(64, 128, 4, stride=2)
-        self.conv4 = nn.Conv2d(128, 256, 4, stride=2)
-        # Project to embedding dim, keep 2x2 spatial
+        # 64x64 -> 32x32 -> 16x16 -> 8x8
+        self.conv1 = nn.Conv2d(img_channels, 64, 4, stride=2, padding=1)
+        self.conv2 = nn.Conv2d(64, 128, 4, stride=2, padding=1)
+        self.conv3 = nn.Conv2d(128, 256, 4, stride=2, padding=1)
+        self.res1 = ResBlock(256)
+        self.res2 = ResBlock(256)
         self.proj = nn.Conv2d(256, embedding_dim, 1)
 
     def forward(self, x):
         x = torch.relu(self.conv1(x))
         x = torch.relu(self.conv2(x))
         x = torch.relu(self.conv3(x))
-        x = torch.relu(self.conv4(x))
-        return self.proj(x)  # (B, embedding_dim, 2, 2)
+        x = self.res1(x)
+        x = self.res2(x)
+        return self.proj(x)  # (B, embedding_dim, 8, 8)
 
 
 class Decoder(nn.Module):
     def __init__(self, img_channels=IMG_CHANNELS, embedding_dim=EMBEDDING_DIM):
         super().__init__()
         self.proj = nn.Conv2d(embedding_dim, 256, 1)
-        # 2x2 -> 64x64 (5 doublings)
+        self.res1 = ResBlock(256)
+        self.res2 = ResBlock(256)
+        # 8x8 -> 16x16 -> 32x32 -> 64x64
         self.deconv1 = nn.ConvTranspose2d(256, 128, 4, stride=2, padding=1)
         self.deconv2 = nn.ConvTranspose2d(128, 64, 4, stride=2, padding=1)
-        self.deconv3 = nn.ConvTranspose2d(64, 32, 4, stride=2, padding=1)
-        self.deconv4 = nn.ConvTranspose2d(32, 16, 4, stride=2, padding=1)
-        self.deconv5 = nn.ConvTranspose2d(16, img_channels, 4, stride=2, padding=1)
+        self.deconv3 = nn.ConvTranspose2d(64, img_channels, 4, stride=2, padding=1)
 
     def forward(self, z_q):
         x = torch.relu(self.proj(z_q))
+        x = self.res1(x)
+        x = self.res2(x)
         x = torch.relu(self.deconv1(x))
         x = torch.relu(self.deconv2(x))
-        x = torch.relu(self.deconv3(x))
-        x = torch.relu(self.deconv4(x))
-        return torch.sigmoid(self.deconv5(x))
+        return torch.sigmoid(self.deconv3(x))
 
 
 class VQVAE(nn.Module):
