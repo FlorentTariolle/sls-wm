@@ -42,13 +42,13 @@ def extract_frames(video_dir: str, output_dir: str, every_n: int = 5,
             if frame_idx % every_n == 0:
                 # Crop 344x344 square (player at left edge, no progress bar)
                 cropped = frame[crop_y:crop_y + crop_size, crop_x:crop_x + crop_size]
-                # Downscale to 64x64 with area interpolation (preserves thin structures)
-                resized = cv2.resize(cropped, (target_size, target_size), interpolation=cv2.INTER_AREA)
-                # Convert to grayscale + Sobel edge detection (ksize=3)
-                gray = cv2.cvtColor(resized, cv2.COLOR_BGR2GRAY)
+                # Sobel edge detection at full 344x344 resolution (before downscale)
+                gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
                 sobel_x = cv2.Sobel(gray, cv2.CV_64F, 1, 0, ksize=3)
                 sobel_y = cv2.Sobel(gray, cv2.CV_64F, 0, 1, ksize=3)
-                resized = cv2.convertScaleAbs(cv2.magnitude(sobel_x, sobel_y))
+                edges = cv2.convertScaleAbs(cv2.magnitude(sobel_x, sobel_y))
+                # Downscale to 64x64 with area interpolation
+                resized = cv2.resize(edges, (target_size, target_size), interpolation=cv2.INTER_AREA)
                 # Save as PNG
                 filename = f"{level_name}_{frame_idx:06d}.png"
                 cv2.imwrite(str(output_dir / filename), resized)
