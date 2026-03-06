@@ -106,6 +106,6 @@ class VQVAE(nn.Module):
 
 
 def vqvae_loss(recon_x, x, vq_loss):
-    """L1 reconstruction + VQ commitment loss."""
-    recon_loss = torch.nn.functional.l1_loss(recon_x, x, reduction='sum') / x.size(0)
+    """MSE reconstruction + VQ commitment loss."""
+    recon_loss = torch.nn.functional.mse_loss(recon_x, x, reduction='sum') / x.size(0)
     return recon_loss + vq_loss, recon_loss, vq_loss
