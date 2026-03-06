@@ -58,7 +58,7 @@ def main():
     with torch.no_grad():
         for i, path in enumerate(selected):
             img = load_image(path).unsqueeze(0).to(device)
-            recon = model(img)[0]
+            recon = model(img)[0]  # works for both VAE and VQVAE (first output is always recon)
 
             orig_pil = tensor_to_image(img[0])
             recon_pil = tensor_to_image(recon[0])
