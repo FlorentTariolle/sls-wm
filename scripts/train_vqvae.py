@@ -111,7 +111,7 @@ def main():
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(exist_ok=True)
-    best_val_loss = float("inf")
+    best_val_recon = float("inf")
 
     log_path = ckpt_dir / "train_log.csv"
     resuming = args.resume and log_path.exists()
@@ -139,13 +139,13 @@ def main():
                              f"{val_loss:.6f}", f"{val_recon:.6f}", f"{val_vq:.6f}", f"{lr:.1e}", f"{dt:.1f}"])
         log_file.flush()
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
+        if val_recon < best_val_recon:
+            best_val_recon = val_recon
             torch.save(model.state_dict(), ckpt_dir / "vqvae_best.pt")
 
     log_file.close()
     torch.save(model.state_dict(), ckpt_dir / "vqvae_final.pt")
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
+    print(f"\nTraining complete. Best val recon: {best_val_recon:.4f}")
     print(f"Checkpoints saved to {ckpt_dir}/")
     print(f"Training log saved to {log_path}")
 
