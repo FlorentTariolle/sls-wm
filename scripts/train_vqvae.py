@@ -76,7 +76,7 @@ def main():
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
     parser.add_argument("--num-embeddings", type=int, default=512, help="Codebook size")
-    parser.add_argument("--embedding-dim", type=int, default=64, help="Codebook vector dimension")
+    parser.add_argument("--embedding-dim", type=int, default=8, help="Codebook vector dimension")
     parser.add_argument("--commitment-cost", type=float, default=0.25, help="Commitment loss weight")
     args = parser.parse_args()
 

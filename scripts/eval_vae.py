@@ -32,7 +32,8 @@ def main():
     parser.add_argument("--output-dir", default="eval_output")
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--model", choices=["vae", "vqvae"], default="vqvae")
-    parser.add_argument("--embedding-dim", type=int, default=64, help="Codebook vector dimension (must match checkpoint)")
+    parser.add_argument("--num-embeddings", type=int, default=512, help="Codebook size (must match checkpoint)")
+    parser.add_argument("--embedding-dim", type=int, default=8, help="Codebook vector dimension (must match checkpoint)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for frame selection")
     args = parser.parse_args()
 
@@ -40,7 +41,7 @@ def main():
 
     def load_model(checkpoint_path):
         if args.model == "vqvae":
-            m = VQVAE(embedding_dim=args.embedding_dim)
+            m = VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim)
         else:
             m = VAE()
         m.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
