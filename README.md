@@ -39,7 +39,7 @@ The system is composed of three distinct neural networks trained sequentially:
 * **Type:** Transformer (autoregressive, on discrete tokens).
 * **Input:** Sequence of 36 codebook indices per frame + action token.
 * **Function:** Predicts the next frame's 36 tokens given the current tokenized state and action — a classification task over vocabulary 1024, not continuous regression.
-* **Why Transformer over GRU:** With a GRU, the VQ-VAE's quantized vectors must be flattened into a continuous input (36 x 32d = 1,152 floats), yielding only 3.6x compression over the raw frame — making the vision model a near pass-through. A Transformer operates directly on discrete token indices, preserving the full 91x compression. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on VQ-VAE tokens.
+* **Why Transformer over GRU:** With a GRU, the VQ-VAE's quantized vectors must be flattened into a continuous input (36 x 8d = 288 floats), yielding only 14x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 91x compression — a 6.5x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on VQ-VAE tokens.
 * **Relevance:** Learns the game's physics and temporal dynamics entirely in discrete latent space, allowing the agent to "hallucinate" precise trajectories as token sequences.
 
 ### C. Controller (C) - *The Agent*
@@ -73,9 +73,9 @@ The original World Models paper uses a beta-VAE with continuous Gaussian latents
 
 The original architecture uses a GRU operating on flattened continuous latent vectors.
 
-* **Observation:** Feeding the GRU flattened VQ-VAE vectors (36 x 32d = 1,152 floats) yields only 3.6x compression over the raw 4,096-pixel input. The vision model becomes a near pass-through rather than a meaningful compression stage. At higher spatial resolutions (14x14), the flattened representation actually *expands* beyond the input size.
+* **Observation:** Feeding the GRU flattened VQ-VAE vectors (36 x 8d = 288 floats) yields only 14x compression over the raw 4,096-pixel input — wasting most of the VQ-VAE's compression potential on continuous vector overhead.
 * **Decision:** Replaced the GRU with a Transformer operating on discrete codebook indices.
-* **Benefit:** Preserves the full 91x compression ratio (36 tokens x 10 bits = 360 bits vs 32,768 bits). The Transformer classifies over a 1024-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the VQ-VAE codebook.
+* **Benefit:** Preserves the full 91x compression ratio (36 tokens x 10 bits = 360 bits vs 32,768 bits) — a 6.5x improvement over the GRU approach. The Transformer classifies over a 1024-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the VQ-VAE codebook.
 
 ### 3.4 Inference Latency (Rejection of MPC)
 
@@ -90,7 +90,7 @@ The original architecture uses a GRU operating on flattened continuous latent ve
 The original World Models paper uses $64 \times 64$ RGB inputs.
 
 * **Observation:** *Geometry Dash* renders in 16:9 widescreen with visually noisy backgrounds. Raw RGB wastes encoder capacity on particles, color gradients, and decorations that carry zero gameplay information.
-* **Decision:** Crop to a 344x344 gameplay square (player left-aligned, forward obstacles visible), apply Sobel edge detection at full resolution, then downscale to $64 \times 64$ grayscale. The encoder uses 3 no-padding stride-2 convolutions (64 → 31 → 14 → 6), producing the $6 \times 6$ spatial grid for tokenization.
+* **Decision:** Crop to a 344x344 gameplay square (player left-aligned, forward obstacles visible), apply Sobel edge detection at full resolution, then downscale to $64 \times 64$ grayscale. The encoder uses 3 no-padding stride-2 convolutions (64 → 31 → 14 → 6) with residual blocks and SiLU activations (~1.9M parameters), producing the $6 \times 6$ spatial grid for tokenization.
 * **Benefit (Sobel):** Extracts structural boundaries — platforms, spikes, player outline — while discarding most of the visual noise. Binary-like edges are far easier for the VQ-VAE to reconstruct sharply.
 * **Benefit (UI Removal):** The progress bar encodes the player's absolute position within a specific level. Retaining it would allow the model to memorize level layouts ("at 47%, a triple spike appears") rather than learning **reactive obstacle dynamics**. Removing it forces the agent to rely solely on visual obstacle perception, producing a more generalizable policy.
 
@@ -128,5 +128,5 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 
 * **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
 * **VQ-VAE:** van den Oord, A., Vinyals, O., & Kavukcuoglu, K. (2017). *Neural Discrete Representation Learning*. [arXiv:1711.00937](https://arxiv.org/abs/1711.00937)
-* **Transformer World Model (IRIS):** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)[arXiv:1406.1078](https://arxiv.org/abs/1406.1078)
+* **Transformer World Model (IRIS):** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
 * **Foundational RL:** Mnih, V., et al. (2013). *Playing Atari with Deep Reinforcement Learning*. [arXiv:1312.5602](https://arxiv.org/abs/1312.5602)
