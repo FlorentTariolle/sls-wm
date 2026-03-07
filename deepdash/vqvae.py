@@ -108,19 +108,40 @@ class VectorQuantizer(nn.Module):
         return z_q, self.commitment_cost * commit_loss, indices.reshape(B, H, W)
 
 
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.block = nn.Sequential(
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.BatchNorm2d(channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(channels, channels, 3, padding=1),
+            nn.BatchNorm2d(channels),
+        )
+
+    def forward(self, x):
+        return torch.relu(x + self.block(x))
+
+
 class Encoder(nn.Module):
     def __init__(self, img_channels=IMG_CHANNELS, embedding_dim=EMBEDDING_DIM):
         super().__init__()
         # No-padding convs: 64 -> 31 -> 14 -> 6
         self.conv1 = nn.Conv2d(img_channels, 32, 4, stride=2)
+        self.res1 = nn.Sequential(ResBlock(32), ResBlock(32))
         self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
+        self.res2 = nn.Sequential(ResBlock(64), ResBlock(64))
         self.conv3 = nn.Conv2d(64, 128, 4, stride=2)
+        self.res3 = nn.Sequential(ResBlock(128), ResBlock(128))
         self.proj = nn.Conv2d(128, embedding_dim, 1)
 
     def forward(self, x):
         x = torch.relu(self.conv1(x))
+        x = self.res1(x)
         x = torch.relu(self.conv2(x))
+        x = self.res2(x)
         x = torch.relu(self.conv3(x))
+        x = self.res3(x)
         return self.proj(x)  # (B, embedding_dim, 6, 6)
 
 
@@ -128,15 +149,21 @@ class Decoder(nn.Module):
     def __init__(self, img_channels=IMG_CHANNELS, embedding_dim=EMBEDDING_DIM):
         super().__init__()
         self.proj = nn.Conv2d(embedding_dim, 128, 1)
+        self.res1 = nn.Sequential(ResBlock(128), ResBlock(128))
         # 6 -> 14 -> 31 -> 64 (mirrors the encoder)
         self.deconv1 = nn.ConvTranspose2d(128, 64, 4, stride=2)
+        self.res2 = nn.Sequential(ResBlock(64), ResBlock(64))
         self.deconv2 = nn.ConvTranspose2d(64, 32, 5, stride=2)
+        self.res3 = nn.Sequential(ResBlock(32), ResBlock(32))
         self.deconv3 = nn.ConvTranspose2d(32, img_channels, 4, stride=2)
 
     def forward(self, z_q):
         x = torch.relu(self.proj(z_q))
+        x = self.res1(x)
         x = torch.relu(self.deconv1(x))
+        x = self.res2(x)
         x = torch.relu(self.deconv2(x))
+        x = self.res3(x)
         return torch.sigmoid(self.deconv3(x))
 
 
