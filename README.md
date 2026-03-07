@@ -39,7 +39,7 @@ The system is composed of three distinct neural networks trained sequentially:
 * **Type:** Transformer (autoregressive, on discrete tokens).
 * **Input:** Sequence of 36 codebook indices per frame + action token.
 * **Function:** Predicts the next frame's 36 tokens given the current tokenized state and action — a classification task over vocabulary 1024, not continuous regression.
-* **Why Transformer over GRU:** With a GRU, the VQ-VAE's quantized vectors must be flattened into a continuous input (36 x 8d = 288 floats), yielding only 14x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 91x compression — a 6.5x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on VQ-VAE tokens.
+* **Why Transformer over RNN:** With an LSTM/GRU, the VQ-VAE's quantized vectors must be flattened into a continuous input (36 x 8d = 288 floats), yielding only 14x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 91x compression — a 6.5x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on VQ-VAE tokens.
 * **Relevance:** Learns the game's physics and temporal dynamics entirely in discrete latent space, allowing the agent to "hallucinate" precise trajectories as token sequences.
 
 ### C. Controller (C) - *The Agent*
@@ -69,13 +69,13 @@ The original World Models paper uses a beta-VAE with continuous Gaussian latents
 * **Decision:** Replaced the beta-VAE with a VQ-VAE producing 36 discrete tokens per frame.
 * **Benefit:** Sharp reconstructions that preserve gameplay-critical structure. The discrete codebook acts as a learned visual vocabulary — each token represents a meaningful spatial pattern (block, spike, floor, empty space) rather than a blurry average.
 
-### 3.3 Transformer World Model (over GRU)
+### 3.3 Transformer World Model (over LSTM/GRU)
 
-The original architecture uses a GRU operating on flattened continuous latent vectors.
+The original architecture uses an LSTM (MDN-RNN) operating on flattened continuous latent vectors.
 
-* **Observation:** Feeding the GRU flattened VQ-VAE vectors (36 x 8d = 288 floats) yields only 14x compression over the raw 4,096-pixel input — wasting most of the VQ-VAE's compression potential on continuous vector overhead.
-* **Decision:** Replaced the GRU with a Transformer operating on discrete codebook indices.
-* **Benefit:** Preserves the full 91x compression ratio (36 tokens x 10 bits = 360 bits vs 32,768 bits) — a 6.5x improvement over the GRU approach. The Transformer classifies over a 1024-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the VQ-VAE codebook.
+* **Observation:** Feeding an RNN flattened VQ-VAE vectors (36 x 8d = 288 floats) yields only 14x compression over the raw 4,096-pixel input — wasting most of the VQ-VAE's compression potential on continuous vector overhead.
+* **Decision:** Replaced the RNN with a Transformer operating on discrete codebook indices.
+* **Benefit:** Preserves the full 91x compression ratio (36 tokens x 10 bits = 360 bits vs 32,768 bits) — a 6.5x improvement over the RNN approach. The Transformer classifies over a 1024-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the VQ-VAE codebook.
 
 ### 3.4 Inference Latency (Rejection of MPC)
 
