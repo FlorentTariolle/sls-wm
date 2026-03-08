@@ -1,34 +1,64 @@
-"""Flush, extract, and split dataset in one go."""
+"""Prepare training data: concatenate episodes, shuffle, split into train/val.
 
-import subprocess
-import sys
+Reads all frames.npy from data/episodes/*, concatenates into a single array,
+shuffles, and splits into data/train.npy and data/val.npy.
+
+Usage:
+    python scripts/prepare_data.py
+    python scripts/prepare_data.py --episodes-dir data/episodes --train-ratio 0.9
+"""
+
 import argparse
+import numpy as np
+from pathlib import Path
 
-parser = argparse.ArgumentParser(description="Flush, extract and split frames")
-parser.add_argument("--video-dir", default="data/videos/Standard")
-parser.add_argument("--output-dir", default="data/frames")
-parser.add_argument("--every-n", type=int, default=5)
-parser.add_argument("--levels", type=int, nargs="+", default=None, help="e.g. --levels 1 2 3")
-parser.add_argument("--train-ratio", type=float, default=0.9)
-args = parser.parse_args()
 
-extract_cmd = [
-    "python", "scripts/extract_frames.py",
-    "--video-dir", args.video_dir,
-    "--output-dir", args.output_dir,
-    "--every-n", str(args.every_n),
-]
-if args.levels:
-    extract_cmd += ["--levels"] + [str(l) for l in args.levels]
+def main():
+    parser = argparse.ArgumentParser(description="Prepare train/val splits from episodes")
+    parser.add_argument("--episodes-dir", default="data/episodes",
+                        help="Directory containing ep_* folders")
+    parser.add_argument("--output-dir", default="data",
+                        help="Output directory for train.npy and val.npy")
+    parser.add_argument("--train-ratio", type=float, default=0.9)
+    parser.add_argument("--seed", type=int, default=42)
+    args = parser.parse_args()
 
-split_cmd = [
-    "python", "scripts/split_dataset.py",
-    "--frames-dir", args.output_dir,
-    "--train-ratio", str(args.train_ratio),
-]
+    episodes_dir = Path(args.episodes_dir)
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
 
-for cmd in [["python", "scripts/flush_data.py"], extract_cmd, split_cmd]:
-    print(f"\n>>> {' '.join(cmd)}")
-    result = subprocess.run(cmd)
-    if result.returncode != 0:
-        sys.exit(result.returncode)
+    # Load all episode frames
+    all_frames = []
+    for ep in sorted(episodes_dir.glob("*")):
+        fp = ep / "frames.npy"
+        if not fp.exists():
+            continue
+        frames = np.load(fp)
+        all_frames.append(frames)
+        print(f"  {ep.name}: {frames.shape[0]} frames")
+
+    if not all_frames:
+        print("No episodes found!")
+        return
+
+    all_frames = np.concatenate(all_frames, axis=0)
+    print(f"\nTotal: {all_frames.shape[0]} frames, shape {all_frames.shape}")
+
+    # Shuffle
+    rng = np.random.default_rng(args.seed)
+    indices = rng.permutation(len(all_frames))
+    all_frames = all_frames[indices]
+
+    # Split
+    split_idx = int(len(all_frames) * args.train_ratio)
+    train = all_frames[:split_idx]
+    val = all_frames[split_idx:]
+
+    np.save(output_dir / "train.npy", train)
+    np.save(output_dir / "val.npy", val)
+    print(f"Train: {len(train)} frames -> {output_dir / 'train.npy'}")
+    print(f"Val:   {len(val)} frames -> {output_dir / 'val.npy'}")
+
+
+if __name__ == "__main__":
+    main()

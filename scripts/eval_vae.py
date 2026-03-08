@@ -28,7 +28,7 @@ def tensor_to_image(t):
 def main():
     parser = argparse.ArgumentParser(description="Evaluate VAE/VQ-VAE reconstructions")
     parser.add_argument("--checkpoint", default="checkpoints/vqvae_best.pt")
-    parser.add_argument("--data-dir", default="data/val")
+    parser.add_argument("--data-dir", default="data/val.npy")
     parser.add_argument("--output-dir", default="eval_output")
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--model", choices=["vae", "vqvae"], default="vqvae")
@@ -54,23 +54,23 @@ def main():
     final_path = ckpt_dir / "vqvae_final.pt" if args.model == "vqvae" else ckpt_dir / "vae_final.pt"
     model_final = load_model(str(final_path)) if final_path.exists() else None
 
-    data_path = Path(args.data_dir)
-    pngs = sorted(data_path.rglob("*.png"))
-    if not pngs:
-        print(f"No PNGs found in {data_path}")
+    data = np.load(args.data_dir)  # (N, 64, 64) uint8
+    if len(data) == 0:
+        print(f"No frames found in {args.data_dir}")
         return
 
     import random
     random.seed(args.seed)
-    selected = random.sample(pngs, min(args.num_samples, len(pngs)))
+    indices = random.sample(range(len(data)), min(args.num_samples, len(data)))
 
     out_dir = Path(args.output_dir)
     out_dir.mkdir(exist_ok=True)
 
     originals, recons_best, recons_final = [], [], []
     with torch.no_grad():
-        for i, path in enumerate(selected):
-            img = load_image(path).unsqueeze(0).to(device)
+        for i, idx in enumerate(indices):
+            frame = data[idx].astype(np.float32) / 255.0
+            img = torch.from_numpy(frame).unsqueeze(0).unsqueeze(0).to(device)
 
             orig_pil = tensor_to_image(img[0])
             recon_best_pil = tensor_to_image(model_best(img)[0][0])

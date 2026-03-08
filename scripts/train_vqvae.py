@@ -6,20 +6,22 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
-from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.vqvae import VQVAE, vqvae_loss
 
 
-class FlatImageDataset(Dataset):
-    def __init__(self, data_dir, augment=False):
-        files = sorted(Path(data_dir).rglob("*.png"))
-        load_transform = transforms.Compose([transforms.Grayscale(), transforms.ToTensor()])
-        self.imgs = [load_transform(Image.open(f)) for f in files]
+class FrameDataset(Dataset):
+    def __init__(self, npy_path, augment=False, device=None):
+        data = np.load(npy_path)  # (N, 64, 64) uint8
+        # Convert to float32 tensors: (N, 1, 64, 64) in [0, 1]
+        self.imgs = torch.from_numpy(data).float().unsqueeze(1) / 255.0
+        if device and device.type == "cuda":
+            self.imgs = self.imgs.to(device)
         self.augment = augment
 
     def __len__(self):
@@ -35,16 +37,16 @@ class FlatImageDataset(Dataset):
         return img, 0
 
 
-def make_loader(data_dir, batch_size, shuffle=True, augment=False):
-    dataset = FlatImageDataset(data_dir, augment=augment)
-    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle, num_workers=0, pin_memory=True)
+def make_loader(npy_path, batch_size, shuffle=True, augment=False, device=None):
+    dataset = FrameDataset(npy_path, augment=augment, device=device)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=shuffle,
+                      num_workers=0, pin_memory=False)
 
 
-def train_epoch(model, loader, optimizer, device):
+def train_epoch(model, loader, optimizer):
     model.train()
     total_loss, total_recon, total_vq, n = 0, 0, 0, 0
     for imgs, _ in loader:
-        imgs = imgs.to(device)
         recon, vq_loss_val, _ = model(imgs)
         loss, recon_l, vq_l = vqvae_loss(recon, imgs, vq_loss_val)
         optimizer.zero_grad()
@@ -59,11 +61,10 @@ def train_epoch(model, loader, optimizer, device):
 
 
 @torch.no_grad()
-def val_epoch(model, loader, device):
+def val_epoch(model, loader):
     model.eval()
     total_loss, total_recon, total_vq, n = 0, 0, 0, 0
     for imgs, _ in loader:
-        imgs = imgs.to(device)
         recon, vq_loss_val, _ = model(imgs)
         loss, recon_l, vq_l = vqvae_loss(recon, imgs, vq_loss_val)
         bs = imgs.size(0)
@@ -76,7 +77,7 @@ def val_epoch(model, loader, device):
 
 def main():
     parser = argparse.ArgumentParser(description="Train VQ-VAE on Geometry Dash frames")
-    parser.add_argument("--data-dir", default="data", help="Root data dir (must contain train/ and val/ subdirs)")
+    parser.add_argument("--data-dir", default="data", help="Root data dir (must contain train.npy and val.npy)")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--lr", type=float, default=2e-3)
@@ -95,8 +96,13 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Device: {device}")
 
-    train_loader = make_loader(str(Path(args.data_dir) / "train"), args.batch_size, shuffle=True, augment=True)
-    val_loader = make_loader(str(Path(args.data_dir) / "val"), args.batch_size, shuffle=False)
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+
+    train_loader = make_loader(str(Path(args.data_dir) / "train.npy"), args.batch_size,
+                               shuffle=True, augment=True, device=device)
+    val_loader = make_loader(str(Path(args.data_dir) / "val.npy"), args.batch_size,
+                             shuffle=False, device=device)
     print(f"Train: {len(train_loader.dataset)} images, Val: {len(val_loader.dataset)} images")
 
     model = VQVAE(
@@ -113,7 +119,6 @@ def main():
 
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=args.epochs, eta_min=1e-5)
-
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(exist_ok=True)
     best_recon_path = ckpt_dir / "best_val_recon.txt"
@@ -132,8 +137,8 @@ def main():
     try:
         for epoch in range(1, args.epochs + 1):
             t0 = time.time()
-            train_loss, train_recon, train_vq = train_epoch(model, train_loader, optimizer, device)
-            val_loss, val_recon, val_vq = val_epoch(model, val_loader, device)
+            train_loss, train_recon, train_vq = train_epoch(model, train_loader, optimizer)
+            val_loss, val_recon, val_vq = val_epoch(model, val_loader)
             scheduler.step()
             dt = time.time() - t0
             lr = optimizer.param_groups[0]["lr"]
