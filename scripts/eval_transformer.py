@@ -37,11 +37,11 @@ def main():
                         help="Number of episodes to visualize")
     parser.add_argument("--rollout-steps", type=int, default=20,
                         help="Number of autoregressive rollout steps")
-    parser.add_argument("--context-frames", type=int, default=8)
-    parser.add_argument("--embed-dim", type=int, default=256)
+    parser.add_argument("--context-frames", type=int, default=4)
+    parser.add_argument("--embed-dim", type=int, default=128)
     parser.add_argument("--n-heads", type=int, default=4)
-    parser.add_argument("--n-layers", type=int, default=8)
-    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--n-layers", type=int, default=6)
+    parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -98,6 +98,12 @@ def main():
             if T < K + 1:
                 continue
 
+            # Load level ID (1-based → 0-based)
+            meta_path = ep / "metadata.json"
+            level_id = 0
+            if meta_path.exists():
+                level_id = json.loads(meta_path.read_text()).get("level", 1) - 1
+
             # Build all windows for this episode
             all_frames = []
             all_actions = []
@@ -111,8 +117,10 @@ def main():
             for b in range(0, len(all_frames), batch_size):
                 f_batch = torch.from_numpy(all_frames[b:b + batch_size]).to(device)
                 a_batch = torch.from_numpy(all_actions[b:b + batch_size]).to(device)
+                bs = f_batch.size(0)
+                l_batch = torch.full((bs,), level_id, dtype=torch.long, device=device)
                 target = f_batch[:, -1]  # (B, 36)
-                logits = model(f_batch, a_batch)  # (B, 36, vocab)
+                logits, _, _ = model(f_batch, a_batch, l_batch)  # (B, 36, vocab)
                 preds = logits.argmax(dim=-1)
                 total_correct += (preds == target).sum().item()
                 total_tokens += target.numel()
@@ -127,8 +135,11 @@ def main():
         actions = np.load(ep / "actions.npy")
         meta_path = ep / "metadata.json"
         level = "?"
+        level_id = 0
         if meta_path.exists():
-            level = json.loads(meta_path.read_text()).get("level", "?")
+            meta = json.loads(meta_path.read_text())
+            level = meta.get("level", "?")
+            level_id = meta.get("level", 1) - 1
 
         # Start from frame 0, use first K frames as context
         ctx_tokens = tokens[:K].copy()  # (K, 36)
@@ -136,6 +147,8 @@ def main():
 
         predicted_frames = []
         actual_frames = []
+
+        level_t = torch.tensor([level_id], dtype=torch.long, device=device)
 
         with torch.no_grad():
             for step in range(args.rollout_steps):
@@ -149,14 +162,15 @@ def main():
                     ctx_tokens.astype(np.int64)).unsqueeze(0).to(device)
                 ctx_a = torch.from_numpy(
                     ctx_actions.astype(np.int64)).unsqueeze(0).to(device)
-                pred_tokens = model.predict_next_frame(ctx_t, ctx_a)  # (1, 36)
+                pred_tokens, death_prob = model.predict_next_frame(ctx_t, ctx_a, level_t)
                 pred_np = pred_tokens[0].cpu().numpy()
+                dp = death_prob[0].item()
 
                 # Debug: check token accuracy for this step
                 actual_tokens = tokens[t].astype(np.int64)
                 match = (pred_np == actual_tokens).sum()
                 if step < 3:
-                    print(f"  Step {step+1}: {match}/36 tokens correct")
+                    print(f"  Step {step+1}: {match}/36 tokens correct, death={dp:.3f}")
 
                 # Decode both predicted and actual
                 pred_img = decode_tokens_to_image(vqvae, pred_np, device)
