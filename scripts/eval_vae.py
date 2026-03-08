@@ -1,4 +1,4 @@
-"""Evaluate VAE or VQ-VAE: generate side-by-side original vs reconstruction images."""
+"""Evaluate VQ-VAE: generate side-by-side original vs reconstruction images."""
 
 import argparse
 import sys
@@ -9,7 +9,6 @@ import numpy as np
 from PIL import Image
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from deepdash.vae import VAE
 from deepdash.vqvae import VQVAE
 
 
@@ -26,12 +25,11 @@ def tensor_to_image(t):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Evaluate VAE/VQ-VAE reconstructions")
+    parser = argparse.ArgumentParser(description="Evaluate VQ-VAE reconstructions")
     parser.add_argument("--checkpoint", default="checkpoints/vqvae_best.pt")
     parser.add_argument("--data-dir", default="data/val.npy")
     parser.add_argument("--output-dir", default="eval_output")
     parser.add_argument("--num-samples", type=int, default=8)
-    parser.add_argument("--model", choices=["vae", "vqvae"], default="vqvae")
     parser.add_argument("--num-embeddings", type=int, default=1024, help="Codebook size (must match checkpoint)")
     parser.add_argument("--embedding-dim", type=int, default=8, help="Codebook vector dimension (must match checkpoint)")
     parser.add_argument("--seed", type=int, default=42, help="Random seed for frame selection")
@@ -40,10 +38,7 @@ def main():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     def load_model(checkpoint_path):
-        if args.model == "vqvae":
-            m = VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim)
-        else:
-            m = VAE()
+        m = VQVAE(num_embeddings=args.num_embeddings, embedding_dim=args.embedding_dim)
         m.load_state_dict(torch.load(checkpoint_path, map_location=device, weights_only=True))
         m.to(device)
         m.eval()
@@ -51,7 +46,7 @@ def main():
 
     model_best = load_model(args.checkpoint)
     ckpt_dir = Path(args.checkpoint).parent
-    final_path = ckpt_dir / "vqvae_final.pt" if args.model == "vqvae" else ckpt_dir / "vae_final.pt"
+    final_path = ckpt_dir / "vqvae_final.pt"
     model_final = load_model(str(final_path)) if final_path.exists() else None
 
     data = np.load(args.data_dir)  # (N, 64, 64) uint8

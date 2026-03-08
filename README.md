@@ -37,8 +37,10 @@ The system is composed of three distinct neural networks trained sequentially:
 ### B. Memory Model (M) - *The Dynamics Learner*
 
 * **Type:** Transformer (autoregressive, on discrete tokens).
-* **Input:** Sequence of 36 codebook indices per frame + action token.
-* **Function:** Predicts the next frame's 36 tokens given the current tokenized state and action — a classification task over vocabulary 1024, not continuous regression.
+* **Input:** Sequence of 36 codebook indices per frame + action token, with block-causal attention (bidirectional within frames, causal across) and RoPE (Rotary Position Embeddings).
+* **Function:** Predicts the next frame's 36 tokens given the current tokenized state and action — a classification task over vocabulary 1024, not continuous regression. Also predicts death probability via a dedicated binary head.
+* **Training Losses:** Cross-entropy on next-frame tokens + binary death prediction + AC-CPC contrastive loss (TWISTER, ICLR 2025) that predicts future hidden states conditioned on actions. Scheduled sampling (5% token noise) reduces train/inference distribution gap.
+* **Architecture:** 6 layers, 128d embeddings, 4 heads, 4 context frames (~1.5M parameters).
 * **Why Transformer over RNN:** With an LSTM/GRU, the VQ-VAE's quantized vectors must be flattened into a continuous input (36 x 8d = 288 floats), yielding only 14x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 91x compression — a 6.5x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on VQ-VAE tokens.
 * **Relevance:** Learns the game's physics and temporal dynamics entirely in discrete latent space, allowing the agent to "hallucinate" precise trajectories as token sequences.
 
@@ -77,13 +79,12 @@ The original architecture uses an LSTM (MDN-RNN) operating on flattened continuo
 * **Decision:** Replaced the RNN with a Transformer operating on discrete codebook indices.
 * **Benefit:** Preserves the full 91x compression ratio (36 tokens x 10 bits = 360 bits vs 32,768 bits) — a 6.5x improvement over the RNN approach. The Transformer classifies over a 1024-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the VQ-VAE codebook.
 
-### 3.4 Inference Latency (Rejection of MPC)
+### 3.4 Inference Strategy (Linear Controller + Beam Search Planning)
 
-**Model Predictive Control (MPC)** was evaluated as a replacement for the Linear Controller.
+Two complementary approaches are planned for Phase 3:
 
-* **Observation:** *Geometry Dash* requires high-frequency decisions (60 FPS / ~16ms window). MPC requires iterative rollout simulations during inference time.
-* **Decision:** Retained the reactive Linear Controller ($Action = W \cdot h_t$).
-* **Benefit:** Ensures $O(1)$ inference time, preventing input lag that would otherwise cause agent failure in a high-speed reaction environment.
+* **Linear Controller (CMA-ES):** Reactive policy ($Action = W \cdot h_t$) trained via evolution in the dream environment. $O(1)$ inference, suitable for high-frequency decisions (60 FPS / ~16ms window). Canonical approach from Ha & Schmidhuber (2018).
+* **Beam Search Planning:** Geometry Dash is deterministic with a binary action space — ideal for tree search. At each frame, branch into jump/no-jump, roll out each branch in the world model for H=10-15 steps, prune branches that predict death, execute the best surviving action. Re-anchoring to real observations every frame mitigates world model drift.
 
 ### 3.5 Input Preprocessing (64x64 Square Crop, Sobel Edges)
 
@@ -105,23 +106,22 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 
 ## 4. Project Roadmap
 
-### Phase 1: Vision — VQ-VAE Tokenizer on Real Game Footage
+### Phase 1: Vision — VQ-VAE Tokenizer on Real Game Footage ✓
 
-* **Goal:** Train the Vision Model (V) to tokenize gameplay frames into a compact discrete representation.
-* **Method:** Capture gameplay footage, extract Sobel edge frames, and train the VQ-VAE with MSE loss and a 1024-entry codebook.
-* **Success Metric:** The VQ-VAE reconstructs gameplay frames preserving macroscopic structure (platforms, spikes, player position) while discarding visual noise. Codebook entries correspond to distinct gameplay elements.
-* **Milestone:** This phase alone validates the core contribution of the project.
+* **Status:** Complete (val_recon ~2.73 on 1080p data).
+* **Result:** 1024-entry codebook, 8d embeddings, 6×6 spatial grid (36 tokens/frame). Sharp reconstructions preserving platforms, spikes, and player position.
 
-### Phase 2: Dynamics — Transformer World Model
+### Phase 2: Dynamics — Transformer World Model (current)
 
-* **Goal:** Learn the game's temporal dynamics entirely in discrete latent space.
-* **Method:** Train the Transformer on sequences of $(tokens_t, a_t) \rightarrow tokens_{t+1}$ from recorded gameplay.
-* **Success Metric:** The Memory Model accurately predicts future token sequences over extended rollouts.
+* **Status:** V4 architecture trained. 18.3% val token accuracy, visually accurate 1-2 step predictions.
+* **Architecture:** Block-causal + RoPE + AC-CPC contrastive loss + death head + scheduled sampling (~1.5M params).
+* **Data:** 332 episodes across 7 levels, ~19K training windows.
+* **Next:** Fix death prediction (currently not generalizing), explore 6×6→8×8 token grid, collect more data.
 
 ### Phase 3: Control — Dream-Trained Agent
 
 * **Goal:** Train an agent that masters *Geometry Dash* levels without ever touching the real game.
-* **Method:** Train the Linear Controller with CMA-ES inside the "Dream" using the Burn-In strategy.
+* **Method:** CMA-ES linear controller trained in the dream environment, and/or beam search planning over the world model.
 * **Success Metric:** Zero-shot deployment — the agent plays the real game using only the learned latent dynamics.
 
 ## 5. References
@@ -129,4 +129,6 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 * **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
 * **VQ-VAE:** van den Oord, A., Vinyals, O., & Kavukcuoglu, K. (2017). *Neural Discrete Representation Learning*. [arXiv:1711.00937](https://arxiv.org/abs/1711.00937)
 * **Transformer World Model (IRIS):** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
+* **AC-CPC (TWISTER):** Burchert, J., et al. (2025). *TWISTER: World Model Conditioned on Tokenized Self-Predictions*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
+* **Block-Causal Attention:** Gupta, A., et al. (2025). *Improving Transformer World Models for Data-Efficient RL*. [arXiv:2502.01591](https://arxiv.org/abs/2502.01591)
 * **Foundational RL:** Mnih, V., et al. (2013). *Playing Atari with Deep Reinforcement Learning*. [arXiv:1312.5602](https://arxiv.org/abs/1312.5602)
