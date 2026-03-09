@@ -4,7 +4,7 @@
 
 **Course:** Representation Learning
 
-**Architecture:** World Models (VQ-VAE + Transformer + Controller)
+**Architecture:** World Models (FSQ-VAE + Transformer + Controller)
 
 ## 1. Project Overview
 
@@ -20,28 +20,28 @@ The system is composed of three distinct neural networks trained sequentially:
 
 ### A. Vision Model (V) - *The Tokenizer*
 
-* **Type:** Vector Quantized Variational Autoencoder (VQ-VAE).
+* **Type:** Finite Scalar Quantization VAE (FSQ-VAE) (Mentzer et al., 2023).
 * **Input:** Preprocessed grayscale Sobel edge maps ($64 \times 64 \times 1$) captured from real *Geometry Dash* gameplay.
 * **Preprocessing Pipeline:**
 
-| Raw frame (640x360) | Square crop (344x344) | Sobel edges (344x344) | Final input (64x64) |
+| Raw frame (1920x1080) | Square crop (1032x1032) | Sobel edges (1032x1032) | Final input (64x64) |
 |:---:|:---:|:---:|:---:|
 | ![Original](docs/preprocessing_1_original.png) | ![Cropped](docs/preprocessing_2_cropped.png) | ![Sobel](docs/preprocessing_3_sobel.png) | ![Final](docs/preprocessing_4_final.png) |
 
-  Raw 360p footage is cropped to a 344x344 square at (220, 16) — bottom-aligned to discard the UI progress bar, player flush to the left edge, maximizing forward obstacle visibility. Sobel edge detection is applied at full resolution before downscaling to $64 \times 64$ with `cv2.INTER_AREA`. The UI is deliberately excluded to prevent the model from memorizing level layouts via the progress indicator, forcing it to learn **reactive dynamics** rather than positional lookup.
+  Raw 1080p footage is cropped to a 1032x1032 square at (660, 48) — bottom-aligned to discard the UI progress bar, player flush to the left edge, maximizing forward obstacle visibility. Sobel edge detection is applied at full resolution before downscaling to $64 \times 64$ with `cv2.INTER_AREA`. The UI is deliberately excluded to prevent the model from memorizing level layouts via the progress indicator, forcing it to learn **reactive dynamics** rather than positional lookup.
 
-* **Function:** Tokenizes visual data into a $6 \times 6$ grid of discrete codebook indices (36 tokens per frame, vocabulary of 1024). Each token is a discrete symbol, not a continuous vector — enabling **91x compression** (360 bits vs 32,768 bits per frame).
-* **Noise Filtering:** Real game footage contains high-frequency stochastic noise (particles, weather effects, visual polish). Sobel edge detection extracts only structural boundaries (platforms, spikes, player outline), and the discrete codebook further discards sub-token noise by snapping encoder outputs to the nearest learned prototype.
-* **Why VQ-VAE over beta-VAE:** A standard beta-VAE was extensively evaluated first (beta=0/0.1/1.0, cyclical annealing, MSE/L1/BCE, latent dims 32-64). All configurations produced fundamentally blurry reconstructions due to Gaussian posterior averaging — spikes were indistinguishable from blocks. For a precision rhythm game requiring pixel-accurate obstacle recognition, this is a dealbreaker. VQ-VAE's discrete codebook eliminates this blurriness entirely.
+* **Function:** Tokenizes visual data into an $8 \times 8$ grid of discrete codes (64 tokens per frame, vocabulary of 1000 from FSQ levels $[8,5,5,5]$). Each token is a discrete symbol, not a continuous vector — enabling **51x compression** (638 bits vs 32,768 bits per frame).
+* **Noise Filtering:** Real game footage contains high-frequency stochastic noise (particles, weather effects, visual polish). Sobel edge detection extracts only structural boundaries (platforms, spikes, player outline), and FSQ further discards sub-token noise by snapping each latent dimension to a fixed number of levels.
+* **Why FSQ over VQ-VAE over beta-VAE:** A standard beta-VAE was extensively evaluated first (beta=0/0.1/1.0, cyclical annealing, MSE/L1/BCE, latent dims 32-64). All configurations produced fundamentally blurry reconstructions due to Gaussian posterior averaging — spikes were indistinguishable from blocks. For a precision rhythm game requiring pixel-accurate obstacle recognition, this is a dealbreaker. VQ-VAE's discrete codebook eliminates this blurriness but introduces codebook collapse risk, commitment cost tuning, and EMA update complexity. FSQ replaces the learned codebook with deterministic scalar quantization — each latent dimension is simply rounded to one of $L$ fixed levels. This guarantees 100% codebook utilization by construction, eliminates all auxiliary losses, and achieved lower reconstruction error (val_recon 1.79 vs 2.73).
 
 ### B. Memory Model (M) - *The Dynamics Learner*
 
 * **Type:** Transformer (autoregressive, on discrete tokens).
-* **Input:** Sequence of 36 codebook indices per frame + action token, with block-causal attention (bidirectional within frames, causal across) and RoPE (Rotary Position Embeddings).
-* **Function:** Predicts the next frame's 36 tokens given the current tokenized state and action — a classification task over vocabulary 1024, not continuous regression. Also predicts death probability via a dedicated binary head.
-* **Training Losses:** Cross-entropy on next-frame tokens + binary death prediction + AC-CPC contrastive loss (TWISTER, ICLR 2025) that predicts future hidden states conditioned on actions. Scheduled sampling (5% token noise) reduces train/inference distribution gap.
-* **Architecture:** 6 layers, 128d embeddings, 4 heads, 4 context frames (~1.5M parameters).
-* **Why Transformer over RNN:** With an LSTM/GRU, the VQ-VAE's quantized vectors must be flattened into a continuous input (36 x 8d = 288 floats), yielding only 14x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 91x compression — a 6.5x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on VQ-VAE tokens.
+* **Input:** Sequence of 64 FSQ codes per frame + action token + status token, with block-causal attention (bidirectional within frames, causal across) and RoPE (Rotary Position Embeddings).
+* **Function:** Predicts the next frame's 64 tokens given the current tokenized state and action — a classification task over vocabulary 1002 (1000 visual codes + ALIVE + DEATH status tokens), not continuous regression. Death is predicted via a dedicated **death token** appended as the 65th position of each frame block, turning death prediction into the same next-token classification task.
+* **Training Losses:** Cross-entropy on next-frame tokens + death token classification + AC-CPC contrastive loss (TWISTER, ICLR 2025) that predicts future hidden states conditioned on actions. Scheduled sampling (5% token noise) reduces train/inference distribution gap.
+* **Architecture:** 6 layers, 128d embeddings, 4 heads, 4 context frames.
+* **Why Transformer over RNN:** With an LSTM/GRU, the FSQ's quantized vectors must be flattened into a continuous input (64 x 4d = 256 floats), yielding only 16x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 51x compression — a 3.2x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on discrete visual tokens.
 * **Relevance:** Learns the game's physics and temporal dynamics entirely in discrete latent space, allowing the agent to "hallucinate" precise trajectories as token sequences.
 
 ### C. Controller (C) - *The Agent*
@@ -63,21 +63,22 @@ The original architecture utilized a **Mixture Density Network (MDN)** to model 
 * **Decision:** Replaced the probabilistic MDN-RNN with a deterministic sequence model.
 * **Benefit:** Eliminates sampling noise and "representation blurring," allowing for high-fidelity latent rollouts with significantly lower computational overhead.
 
-### 3.2 Discrete Tokenization (VQ-VAE over beta-VAE)
+### 3.2 Discrete Tokenization (FSQ over VQ-VAE over beta-VAE)
 
 The original World Models paper uses a beta-VAE with continuous Gaussian latents.
 
-* **Observation:** Beta-VAE reconstructions are fundamentally blurred by posterior averaging. After exhaustive hyperparameter search (beta values, annealing schedules, loss functions, latent dimensions), reconstructions could not distinguish spikes from blocks — a fatal limitation for a precision game.
-* **Decision:** Replaced the beta-VAE with a VQ-VAE producing 36 discrete tokens per frame.
-* **Benefit:** Sharp reconstructions that preserve gameplay-critical structure. The discrete codebook acts as a learned visual vocabulary — each token represents a meaningful spatial pattern (block, spike, floor, empty space) rather than a blurry average.
+* **Observation (beta-VAE):** Beta-VAE reconstructions are fundamentally blurred by posterior averaging. After exhaustive hyperparameter search (beta values, annealing schedules, loss functions, latent dimensions), reconstructions could not distinguish spikes from blocks — a fatal limitation for a precision game.
+* **Observation (VQ-VAE):** VQ-VAE eliminates blurriness but introduces codebook collapse, commitment cost tuning (cc), and EMA update complexity. Achieving stable training required extensive hyperparameter search (embedding dim, codebook size, commitment cost, EMA vs gradient updates, k-means init).
+* **Decision:** Replaced the VQ-VAE with an FSQ-VAE (Mentzer et al., 2023) producing 64 discrete tokens per frame from levels $[8,5,5,5]$ (1000 codes).
+* **Benefit:** FSQ quantizes each latent dimension to a fixed number of scalar levels via simple rounding — no learned codebook, no commitment loss, no EMA updates, no collapse risk. 100% codebook utilization by construction. Lower reconstruction error than VQ-VAE (val_recon 1.79 vs 2.73) with simpler training.
 
 ### 3.3 Transformer World Model (over LSTM/GRU)
 
 The original architecture uses an LSTM (MDN-RNN) operating on flattened continuous latent vectors.
 
-* **Observation:** Feeding an RNN flattened VQ-VAE vectors (36 x 8d = 288 floats) yields only 14x compression over the raw 4,096-pixel input — wasting most of the VQ-VAE's compression potential on continuous vector overhead.
-* **Decision:** Replaced the RNN with a Transformer operating on discrete codebook indices.
-* **Benefit:** Preserves the full 91x compression ratio (36 tokens x 10 bits = 360 bits vs 32,768 bits) — a 6.5x improvement over the RNN approach. The Transformer classifies over a 1024-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the VQ-VAE codebook.
+* **Observation:** Feeding an RNN flattened FSQ vectors (64 x 4d = 256 floats) yields only 16x compression over the raw 4,096-pixel input — wasting most of the FSQ's compression potential on continuous vector overhead.
+* **Decision:** Replaced the RNN with a Transformer operating on discrete FSQ codes.
+* **Benefit:** Preserves the full 51x compression ratio (64 tokens x $\log_2(1000) \approx 10$ bits = 638 bits vs 32,768 bits) — a 3.2x improvement over the RNN approach. The Transformer classifies over a 1000-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the FSQ latent dimension.
 
 ### 3.4 Inference Strategy (Linear Controller + Beam Search Planning)
 
@@ -91,8 +92,8 @@ Two complementary approaches are planned for Phase 3:
 The original World Models paper uses $64 \times 64$ RGB inputs.
 
 * **Observation:** *Geometry Dash* renders in 16:9 widescreen with visually noisy backgrounds. Raw RGB wastes encoder capacity on particles, color gradients, and decorations that carry zero gameplay information.
-* **Decision:** Crop to a 344x344 gameplay square (player left-aligned, forward obstacles visible), apply Sobel edge detection at full resolution, then downscale to $64 \times 64$ grayscale. The encoder uses 3 no-padding stride-2 convolutions (64 → 31 → 14 → 6) with residual blocks and SiLU activations (~1.9M parameters), producing the $6 \times 6$ spatial grid for tokenization.
-* **Benefit (Sobel):** Extracts structural boundaries — platforms, spikes, player outline — while discarding most of the visual noise. Binary-like edges are far easier for the VQ-VAE to reconstruct sharply.
+* **Decision:** Crop to a 1032x1032 gameplay square (player left-aligned, forward obstacles visible), apply Sobel edge detection at full resolution, then downscale to $64 \times 64$ grayscale. The encoder uses 3 stride-2 convolutions (64 → 32 → 16 → 8) with residual blocks and SiLU activations, producing the $8 \times 8$ spatial grid for FSQ tokenization.
+* **Benefit (Sobel):** Extracts structural boundaries — platforms, spikes, player outline — while discarding most of the visual noise. Binary-like edges are far easier for the FSQ-VAE to reconstruct sharply.
 * **Benefit (UI Removal):** The progress bar encodes the player's absolute position within a specific level. Retaining it would allow the model to memorize level layouts ("at 47%, a triple spike appears") rather than learning **reactive obstacle dynamics**. Removing it forces the agent to rely solely on visual obstacle perception, producing a more generalizable policy.
 
 ### 3.6 Training Protocol: The "Dreaming" Loop
@@ -106,17 +107,17 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 
 ## 4. Project Roadmap
 
-### Phase 1: Vision — VQ-VAE Tokenizer on Real Game Footage ✓
+### Phase 1: Vision — FSQ-VAE Tokenizer on Real Game Footage ✓
 
-* **Status:** Complete (val_recon ~2.73 on 1080p data).
-* **Result:** 1024-entry codebook, 8d embeddings, 6×6 spatial grid (36 tokens/frame). Sharp reconstructions preserving platforms, spikes, and player position.
+* **Status:** Complete (val_recon ~1.79 on 1080p data).
+* **Result:** FSQ levels $[8,5,5,5]$ (1000 codes), 4d latents, 8×8 spatial grid (64 tokens/frame). Sharp reconstructions preserving platforms, spikes, and player position.
 
 ### Phase 2: Dynamics — Transformer World Model (current)
 
-* **Status:** V4 architecture trained. 18.3% val token accuracy, visually accurate 1-2 step predictions.
-* **Architecture:** Block-causal + RoPE + AC-CPC contrastive loss + death head + scheduled sampling (~1.5M params).
+* **Status:** V5 architecture trained. 21.7% val token accuracy, visually accurate 1-2 step predictions.
+* **Architecture:** Block-causal + RoPE + AC-CPC contrastive loss + death token + scheduled sampling.
 * **Data:** 332 episodes across 7 levels, ~19K training windows.
-* **Next:** Fix death prediction (currently not generalizing), explore 6×6→8×8 token grid, collect more data.
+* **Next:** Improve token accuracy, collect more data, explore larger context windows.
 
 ### Phase 3: Control — Dream-Trained Agent
 
@@ -127,6 +128,7 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 ## 5. References
 
 * **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
+* **FSQ:** Mentzer, F., Minnen, D., Agustsson, E., & Tschannen, M. (2023). *Finite Scalar Quantization: VQ-VAE Made Simple*. [arXiv:2309.15505](https://arxiv.org/abs/2309.15505)
 * **VQ-VAE:** van den Oord, A., Vinyals, O., & Kavukcuoglu, K. (2017). *Neural Discrete Representation Learning*. [arXiv:1711.00937](https://arxiv.org/abs/1711.00937)
 * **Transformer World Model (IRIS):** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
 * **AC-CPC (TWISTER):** Burchert, J., et al. (2025). *TWISTER: World Model Conditioned on Tokenized Self-Predictions*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
