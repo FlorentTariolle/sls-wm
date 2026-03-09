@@ -36,7 +36,7 @@ def main():
     parser.add_argument("--num-samples", type=int, default=8)
     parser.add_argument("--num-embeddings", type=int, default=1024)
     parser.add_argument("--embedding-dim", type=int, default=8)
-    parser.add_argument("--levels", type=int, nargs="+", default=[7, 5, 5, 5, 5])
+    parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 

@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--model", choices=["vqvae", "fsq"], default="fsq")
     parser.add_argument("--checkpoint", default=None,
                         help="Checkpoint path (default: checkpoints/{model}_best.pt)")
-    parser.add_argument("--levels", type=int, nargs="+", default=[7, 5, 5, 5, 5])
+    parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
 
     parser.add_argument("--crop-x", type=int, default=660)
     parser.add_argument("--crop-y", type=int, default=48)

@@ -4,7 +4,7 @@ Replaces VQ-VAE's codebook lookup with simple rounding to fixed levels.
 No codebook, no EMA, no dead entries, no commitment loss tuning.
 8x8 spatial grid (64 tokens/frame), padding=1 encoder.
 
-FSQ levels [7,5,5,5,5] → 4375 implicit codes with 5d latent per spatial position.
+FSQ levels [8,5,5,5] → 1000 implicit codes with 4d latent per spatial position.
 
 References:
     - Mentzer et al., 2023: Finite Scalar Quantization
@@ -18,7 +18,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-DEFAULT_LEVELS = [7, 5, 5, 5, 5]
+DEFAULT_LEVELS = [8, 5, 5, 5]
 
 
 class FSQQuantizer(nn.Module):

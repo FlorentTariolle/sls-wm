@@ -41,7 +41,7 @@ def apply_rope(x, cos, sin):
 class WorldModel(nn.Module):
     def __init__(
         self,
-        vocab_size: int = 4375,
+        vocab_size: int = 1000,
         n_actions: int = 2,
         n_levels: int = 8,
         embed_dim: int = 128,

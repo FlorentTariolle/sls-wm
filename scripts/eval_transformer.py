@@ -54,7 +54,7 @@ def main():
     parser.add_argument("--num-samples", type=int, default=4)
     parser.add_argument("--rollout-steps", type=int, default=20)
     parser.add_argument("--context-frames", type=int, default=4)
-    parser.add_argument("--vocab-size", type=int, default=4375)
+    parser.add_argument("--vocab-size", type=int, default=1000)
     parser.add_argument("--tokens-per-frame", type=int, default=64)
     parser.add_argument("--embed-dim", type=int, default=128)
     parser.add_argument("--n-heads", type=int, default=4)
@@ -62,7 +62,7 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     # Tokenizer-specific
-    parser.add_argument("--levels", type=int, nargs="+", default=[7, 5, 5, 5, 5])
+    parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
     parser.add_argument("--num-embeddings", type=int, default=1024)
     parser.add_argument("--embedding-dim", type=int, default=8)
     args = parser.parse_args()

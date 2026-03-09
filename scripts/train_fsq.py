@@ -111,7 +111,7 @@ def main():
     parser.add_argument("--lr", type=float, default=2e-3)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume", default=None, help="Path to checkpoint to resume from")
-    parser.add_argument("--levels", type=int, nargs="+", default=[7, 5, 5, 5, 5],
+    parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5],
                         help="FSQ quantization levels per channel")
     parser.add_argument("--alpha-slow", type=float, default=0.1,
                         help="Weight for GRWM temporal slowness loss")
