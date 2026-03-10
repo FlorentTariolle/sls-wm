@@ -221,10 +221,10 @@ class WorldModel(nn.Module):
         # Build interleaved sequence: [f0(65) a0 f1(65) a1 ... fK-1(65) aK-1 fK(65)]
         parts = []
         for i in range(K):
-            parts.append(self.token_embed(frame_tokens[:, i]))  # (B, 65, D)
+            parts.append(self.token_embed(frame_tokens[:, i]))    # (B, 65, D)
             act = self.action_embed(actions[:, i])
-            parts.append(act.unsqueeze(1))                       # (B, 1, D)
-        parts.append(self.token_embed(frame_tokens[:, K]))       # (B, 65, D) target
+            parts.append(act.unsqueeze(1))                        # (B, 1, D)
+        parts.append(self.token_embed(frame_tokens[:, K]))        # (B, 65, D) target
 
         x = torch.cat(parts, dim=1)  # (B, seq_len, D)
 
@@ -311,7 +311,7 @@ class WorldModel(nn.Module):
         # Build interleaved context: [f0(65) a0 f1(65) a1 ... fK-1(65) aK-1]
         parts = []
         for i in range(K):
-            parts.append(self.token_embed(frame_tokens[:, i]))   # (B, 65, D)
+            parts.append(self.token_embed(frame_tokens[:, i]))    # (B, 65, D)
             act = self.action_embed(actions[:, i])
             parts.append(act.unsqueeze(1))                        # (B, 1, D)
         x = torch.cat(parts, dim=1)  # (B, ctx_len, D)
