@@ -130,7 +130,7 @@ def main():
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=64)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--context-frames", type=int, default=4)
+    parser.add_argument("--context-frames", type=int, default=8)
     parser.add_argument("--vocab-size", type=int, default=1000,
                         help="Tokenizer vocabulary size (1000 for FSQ, 1024 for VQ-VAE)")
     parser.add_argument("--tokens-per-frame", type=int, default=64,
@@ -149,6 +149,8 @@ def main():
                         help="Scheduled sampling noise rate")
     parser.add_argument("--label-smoothing", type=float, default=0.1,
                         help="Label smoothing for cross-entropy loss")
+    parser.add_argument("--death-oversample", type=int, default=15,
+                        help="Repeat death-frame samples this many times (1 = no oversampling)")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
@@ -211,7 +213,9 @@ def main():
             # Pack: (K+1, TPF+1) where last col is status
             frame_with_status = np.concatenate([frame_window, status], axis=1)
             n_deaths += int(is_death_frame)
-            target_list.append((frame_with_status, action_window, level_id))
+            repeats = args.death_oversample if is_death_frame else 1
+            for _ in range(repeats):
+                target_list.append((frame_with_status, action_window, level_id))
 
     # Map status 0/1 to actual token indices (done after model is created)
     # For now store raw, remap in dataset __getitem__
