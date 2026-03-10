@@ -96,6 +96,8 @@ def main():
     model.load_state_dict(torch.load(args.transformer_checkpoint, map_location=device,
                                      weights_only=True))
     model.eval()
+    model = torch.compile(model)
+    _m = model._orig_mod if hasattr(model, "_orig_mod") else model
 
     # Find episodes
     episodes_dir = Path(args.episodes_dir)
@@ -124,7 +126,7 @@ def main():
     # --- Single-step accuracy ---
     total_correct, total_tokens = 0, 0
     batch_size = 256
-    with torch.no_grad():
+    with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=device.type == "cuda"):
         for ep_idx, ep in enumerate(candidates):
             print(f"  Single-step: episode {ep_idx + 1}/{len(candidates)} ({ep.name})",
                   end="\r")
@@ -142,15 +144,16 @@ def main():
             is_clear = "clear" in ep.name
 
             # Build windows with status tokens
+            _m = model._orig_mod if hasattr(model, "_orig_mod") else model
             all_frames = []
             all_actions = []
             for i in range(T - K):
                 window = tokens[i:i + K + 1]  # (K+1, TPF)
                 # Append status column
-                status = np.full((K + 1, 1), model.ALIVE_TOKEN, dtype=np.int64)
+                status = np.full((K + 1, 1), _m.ALIVE_TOKEN, dtype=np.int64)
                 is_death = (not is_clear) and (i + K == T - 1)
                 if is_death:
-                    status[K] = model.DEATH_TOKEN
+                    status[K] = _m.DEATH_TOKEN
                 frame_with_status = np.concatenate([window, status], axis=1)
                 all_frames.append(frame_with_status)
                 all_actions.append(actions[i:i + K])
@@ -187,7 +190,7 @@ def main():
 
         # Context: first K frames with ALIVE status
         ctx_tokens = tokens[:K].copy()  # (K, TPF)
-        ctx_status = np.full((K, 1), model.ALIVE_TOKEN, dtype=np.int64)
+        ctx_status = np.full((K, 1), _m.ALIVE_TOKEN, dtype=np.int64)
         ctx_with_status = np.concatenate([ctx_tokens, ctx_status], axis=1)  # (K, TPF+1)
         ctx_actions = actions[:K].copy()
 
@@ -196,7 +199,7 @@ def main():
 
         level_t = torch.tensor([level_id], dtype=torch.long, device=device)
 
-        with torch.no_grad():
+        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=device.type == "cuda"):
             for step in range(args.rollout_steps):
                 t = K + step
                 if t >= len(tokens):
@@ -226,7 +229,7 @@ def main():
                 # Shift context: drop oldest, add predicted with ALIVE status
                 new_frame = np.concatenate([
                     pred_np.reshape(1, TPF),
-                    np.array([[model.ALIVE_TOKEN]], dtype=np.int64)
+                    np.array([[_m.ALIVE_TOKEN]], dtype=np.int64)
                 ], axis=1)
                 ctx_with_status = np.concatenate([
                     ctx_with_status[1:], new_frame
