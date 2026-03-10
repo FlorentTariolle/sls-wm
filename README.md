@@ -105,7 +105,21 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 3. **Policy Optimization:** The Controller (C) interacts solely with this hallucinated environment.
 4. **Reset & Diversify:** Upon death or timeout, a new random 64-frame "seed" from a different gameplay segment is loaded.
 
-## 4. Project Roadmap
+## 4. Data Collection
+
+Training data is recorded directly from live *Geometry Dash* gameplay using `scripts/record_gameplay.py`. The recorder captures screen frames at 60 FPS via `mss`, preprocesses them into 64×64 Sobel edge maps, and logs the player's action (jump/idle) each frame. Death detection is handled by reading the game's process memory (`deepdash/gd_mem.py`) — specifically `PlayerObject.m_isDead` — which allows automatic episode splitting on each death and skipping the respawn overlay, requiring zero manual intervention beyond playing the game.
+
+### Data Strategy
+
+The initial dataset was recorded on the first official levels of the game (levels 1–7), chosen because their visual style is graphically "vanilla" — clean geometric shapes, minimal particle effects, no custom decorations that would confuse the edge detector. However, *Geometry Dash* only ships ~21 official levels, and the early ones are short. To scale the dataset without waiting for skill improvement on harder official levels, we turned to **community-made custom levels** as surrogates. The *Geometry Dash* level editor has produced millions of user-created levels, many of which use the same vanilla visual style as the early official levels. By selecting graphically compatible custom levels, we can generate practically unlimited training data with diverse obstacle patterns while staying within the visual distribution our models were trained on.
+
+### Current Dataset
+
+* **524 episodes**, **~33K frames** across official levels (1–7) and vanilla-style custom levels.
+* Episodes range from a few frames (instant deaths) to several hundred (successful runs or clears).
+* The dataset has been scaled incrementally — the last time we tripled the dataset size, transformer accuracy roughly doubled, suggesting the model is still in the data-hungry regime.
+
+## 5. Project Roadmap
 
 ### Phase 1: Vision — FSQ-VAE Tokenizer on Real Game Footage ✓
 
@@ -114,10 +128,10 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 
 ### Phase 2: Dynamics — Transformer World Model (current)
 
-* **Status:** V5 architecture trained. 21.7% val token accuracy, visually accurate 1-2 step predictions.
+* **Status:** V5 architecture trained on 332 episodes (pre-expansion). 21.9% val token accuracy, visually accurate 1-2 step predictions.
 * **Architecture:** Block-causal + RoPE + AC-CPC contrastive loss + death token + scheduled sampling.
-* **Data:** 332 episodes across 7 levels, ~19K training windows.
-* **Next:** Improve token accuracy, collect more data, explore larger context windows.
+* **Data:** Dataset recently expanded to 524 episodes (~33K frames) with custom level recordings. Retraining on the full dataset is expected to yield significant accuracy gains.
+* **Next:** Retrain on expanded dataset, explore larger context windows.
 
 ### Phase 3: Control — Dream-Trained Agent
 
@@ -125,7 +139,7 @@ To overcome the limitations of deterministic generation (Mode Collapse), the age
 * **Method:** CMA-ES linear controller trained in the dream environment, and/or beam search planning over the world model.
 * **Success Metric:** Zero-shot deployment — the agent plays the real game using only the learned latent dynamics.
 
-## 5. References
+## 6. References
 
 * **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
 * **FSQ:** Mentzer, F., Minnen, D., Agustsson, E., & Tschannen, M. (2023). *Finite Scalar Quantization: VQ-VAE Made Simple*. [arXiv:2309.15505](https://arxiv.org/abs/2309.15505)
