@@ -1,0 +1,8 @@
+torch
+torchvision
+numpy
+matplotlib
+opencv-python
+Pillow
+keyboard
+mss
