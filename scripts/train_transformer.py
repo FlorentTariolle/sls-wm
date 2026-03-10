@@ -15,74 +15,98 @@ from pathlib import Path
 
 import numpy as np
 import torch
-from torch.utils.data import Dataset, DataLoader
+import torch.nn.functional as F
+from torch.utils.data import TensorDataset, DataLoader
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.world_model import WorldModel
 
 
-def train_epoch(model, loader, optimizer, cpc_weight, device, token_noise=0.0,
-                label_smoothing=0.0):
+def _unwrap(model):
+    """Access underlying model whether torch.compiled or not."""
+    return model._orig_mod if hasattr(model, "_orig_mod") else model
+
+
+def focal_cross_entropy(logits, targets, gamma=2.0, label_smoothing=0.0):
+    """Focal loss: downweights easy (well-classified) tokens, upweights hard ones.
+
+    FL(p_t) = -(1 - p_t)^gamma * log(p_t)
+
+    With gamma=0 this is standard cross-entropy. Higher gamma focuses more on
+    hard tokens (e.g. changing regions between frames).
+
+    Reference: Lin et al., "Focal Loss for Dense Object Detection", ICCV 2017.
+    """
+    ce = F.cross_entropy(logits, targets, reduction='none',
+                         label_smoothing=label_smoothing)
+    if gamma == 0:
+        return ce.mean()
+    pt = torch.exp(-ce)
+    return (((1 - pt) ** gamma) * ce).mean()
+
+
+def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
+                token_noise=0.0, label_smoothing=0.0, focal_gamma=2.0):
     model.train()
-    tpf = model.tokens_per_frame
-    bs_tok = model.block_size  # tpf + 1 (visual + status)
+    m = _unwrap(model)
+    tpf = m.tokens_per_frame
+    vocab = m.full_vocab_size
+    vs = m.vocab_size
     total_loss, total_correct, total_tokens = 0, 0, 0
     total_death_correct, total_death_samples = 0, 0
     total_cpc_loss = 0.0
 
-    for frame_tokens, actions, level_ids in loader:
-        frame_tokens = frame_tokens.to(device)
-        actions = actions.to(device)
-        level_ids = level_ids.to(device)
+    use_amp = device.type == "cuda"
 
-        # Target is the last frame block (visual + status)
+    for frame_tokens, actions, level_ids in loader:
+        frame_tokens = frame_tokens.to(device, non_blocking=True)
+        actions = actions.to(device, non_blocking=True)
+        level_ids = level_ids.to(device, non_blocking=True)
+
         target = frame_tokens[:, -1]  # (B, 65)
 
         # Scheduled sampling: corrupt context visual tokens (not status tokens)
         if token_noise > 0:
-            ctx = frame_tokens[:, :-1].clone()  # (B, K, 65)
+            ctx = frame_tokens[:, :-1].clone()
             visual = ctx[:, :, :tpf]
             mask = torch.rand_like(visual, dtype=torch.float) < token_noise
-            random_tokens = torch.randint(0, model.vocab_size, visual.shape,
-                                          device=device)
+            random_tokens = torch.randint(0, vs, visual.shape, device=device)
             visual = torch.where(mask, random_tokens, visual)
             ctx[:, :, :tpf] = visual
             frame_tokens = torch.cat([ctx, frame_tokens[:, -1:]], dim=1)
 
-        logits, cpc_loss = model(frame_tokens, actions, level_ids)
-        # Loss over all 65 target positions (64 visual + 1 status)
-        token_loss = torch.nn.functional.cross_entropy(
-            logits.reshape(-1, model.full_vocab_size),
-            target.reshape(-1),
-            label_smoothing=label_smoothing,
-        )
-        loss = token_loss + cpc_weight * cpc_loss
+        with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
+            logits, cpc_loss = model(frame_tokens, actions, level_ids)
+            token_loss = focal_cross_entropy(
+                logits.reshape(-1, vocab),
+                target.reshape(-1),
+                gamma=focal_gamma,
+                label_smoothing=label_smoothing,
+            )
+            loss = token_loss + cpc_weight * cpc_loss
 
         optimizer.zero_grad()
-        loss.backward()
+        scaler.scale(loss).backward()
+        scaler.unscale_(optimizer)
         torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-        optimizer.step()
+        scaler.step(optimizer)
+        scaler.update()
 
         bs = frame_tokens.size(0)
-        # Visual token metrics (first tpf positions)
-        visual_target = target[:, :tpf]
-        visual_logits = logits[:, :tpf]
-        total_loss += torch.nn.functional.cross_entropy(
-            visual_logits.reshape(-1, model.full_vocab_size),
-            visual_target.reshape(-1),
-        ).item() * bs * tpf
-        preds = visual_logits.argmax(dim=-1)
-        total_correct += (preds == visual_target).sum().item()
-        total_tokens += bs * tpf
+        with torch.no_grad():
+            visual_preds = logits[:, :tpf].argmax(dim=-1)
+            visual_target = target[:, :tpf]
+            total_correct += (visual_preds == visual_target).sum().item()
+            total_tokens += bs * tpf
+            total_loss += token_loss.item() * bs
 
-        # Death token metrics (position tpf)
-        status_target = target[:, tpf]  # (B,)
-        status_pred = logits[:, tpf].argmax(dim=-1)  # (B,)
-        total_death_correct += (status_pred == status_target).sum().item()
-        total_death_samples += bs
-        total_cpc_loss += cpc_loss.item() * bs
+            status_target = target[:, tpf]
+            status_pred = logits[:, tpf].argmax(dim=-1)
+            total_death_correct += (status_pred == status_target).sum().item()
+            total_death_samples += bs
+            total_cpc_loss += cpc_loss.item() * bs
 
-    return (total_loss / total_tokens, total_correct / total_tokens,
+    return (total_loss / total_death_samples, total_correct / total_tokens,
             total_death_correct / total_death_samples,
             total_cpc_loss / total_death_samples)
 
@@ -90,29 +114,34 @@ def train_epoch(model, loader, optimizer, cpc_weight, device, token_noise=0.0,
 @torch.no_grad()
 def val_epoch(model, loader, device):
     model.eval()
-    tpf = model.tokens_per_frame
+    m = _unwrap(model)
+    tpf = m.tokens_per_frame
+    vocab = m.full_vocab_size
     total_loss, total_correct, total_tokens = 0, 0, 0
     total_death_correct, total_death_samples = 0, 0
 
+    use_amp = device.type == "cuda"
+
     for frame_tokens, actions, level_ids in loader:
-        frame_tokens = frame_tokens.to(device)
-        actions = actions.to(device)
-        level_ids = level_ids.to(device)
+        frame_tokens = frame_tokens.to(device, non_blocking=True)
+        actions = actions.to(device, non_blocking=True)
+        level_ids = level_ids.to(device, non_blocking=True)
 
         target = frame_tokens[:, -1]
-        logits, _ = model(frame_tokens, actions, level_ids)
+
+        with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
+            logits, _ = model(frame_tokens, actions, level_ids)
 
         visual_target = target[:, :tpf]
         visual_logits = logits[:, :tpf]
         token_loss = torch.nn.functional.cross_entropy(
-            visual_logits.reshape(-1, model.full_vocab_size),
+            visual_logits.reshape(-1, vocab),
             visual_target.reshape(-1),
         )
 
         bs = frame_tokens.size(0)
         total_loss += token_loss.item() * bs * tpf
-        preds = visual_logits.argmax(dim=-1)
-        total_correct += (preds == visual_target).sum().item()
+        total_correct += (visual_logits.argmax(dim=-1) == visual_target).sum().item()
         total_tokens += bs * tpf
 
         status_target = target[:, tpf]
@@ -128,9 +157,9 @@ def main():
     parser = argparse.ArgumentParser(description="Train Transformer world model")
     parser.add_argument("--episodes-dir", default="data/episodes")
     parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=64)
+    parser.add_argument("--batch-size", type=int, default=256)
     parser.add_argument("--lr", type=float, default=1e-3)
-    parser.add_argument("--context-frames", type=int, default=8)
+    parser.add_argument("--context-frames", type=int, default=4)
     parser.add_argument("--vocab-size", type=int, default=1000,
                         help="Tokenizer vocabulary size (1000 for FSQ, 1024 for VQ-VAE)")
     parser.add_argument("--tokens-per-frame", type=int, default=64,
@@ -149,6 +178,8 @@ def main():
                         help="Scheduled sampling noise rate")
     parser.add_argument("--label-smoothing", type=float, default=0.1,
                         help="Label smoothing for cross-entropy loss")
+    parser.add_argument("--focal-gamma", type=float, default=2.0,
+                        help="Focal loss gamma (0 = standard CE)")
     parser.add_argument("--death-oversample", type=int, default=15,
                         help="Repeat death-frame samples this many times (1 = no oversampling)")
     parser.add_argument("--seed", type=int, default=42)
@@ -176,8 +207,8 @@ def main():
 
     K = args.context_frames
     TPF = args.tokens_per_frame
-    train_samples = []
-    val_samples = []
+    train_frames, train_actions, train_levels = [], [], []
+    val_frames, val_actions, val_levels = [], [], []
 
     n_deaths = 0
     for ep in all_episodes:
@@ -196,48 +227,30 @@ def main():
 
         is_clear = "clear" in ep.name
 
-        target_list = val_samples if ep.name in val_episodes else train_samples
+        is_val = ep.name in val_episodes
+        f_list = val_frames if is_val else train_frames
+        a_list = val_actions if is_val else train_actions
+        l_list = val_levels if is_val else train_levels
+
         for i in range(T - K):
             frame_window = tokens[i:i + K + 1].astype(np.int64)  # (K+1, TPF)
             action_window = actions[i:i + K].astype(np.int64)
 
             # Append status token to each frame
             # Target frame (index K in window): DEATH if last frame of death episode
-            status = np.full((K + 1, 1), 0, dtype=np.int64)  # placeholder, filled below
+            status = np.full((K + 1, 1), 0, dtype=np.int64)
             is_death_frame = (not is_clear) and (i + K == T - 1)
-            for f_idx in range(K + 1):
-                if f_idx == K and is_death_frame:
-                    status[f_idx] = 1  # will be mapped to DEATH_TOKEN
-                # Context frames are always alive (status=0 -> ALIVE_TOKEN)
+            if is_death_frame:
+                status[K] = 1  # will be mapped to DEATH_TOKEN
+            n_deaths += int(is_death_frame)
 
             # Pack: (K+1, TPF+1) where last col is status
             frame_with_status = np.concatenate([frame_window, status], axis=1)
-            n_deaths += int(is_death_frame)
             repeats = args.death_oversample if is_death_frame else 1
             for _ in range(repeats):
-                target_list.append((frame_with_status, action_window, level_id))
-
-    # Map status 0/1 to actual token indices (done after model is created)
-    # For now store raw, remap in dataset __getitem__
-
-    class SampleDataset(Dataset):
-        def __init__(self, samples, alive_token, death_token):
-            self.samples = samples
-            self.alive_token = alive_token
-            self.death_token = death_token
-
-        def __len__(self):
-            return len(self.samples)
-
-        def __getitem__(self, idx):
-            f, a, lvl = self.samples[idx]
-            f = torch.from_numpy(f.copy())
-            # Remap status column: 0 -> ALIVE, 1 -> DEATH
-            status = f[:, -1]
-            status[status == 0] = self.alive_token
-            status[status == 1] = self.death_token
-            f[:, -1] = status
-            return f, torch.from_numpy(a), lvl
+                f_list.append(frame_with_status)
+                a_list.append(action_window)
+                l_list.append(level_id)
 
     # Create model first to get token indices
     model = WorldModel(
@@ -251,11 +264,28 @@ def main():
         tokens_per_frame=args.tokens_per_frame,
     ).to(device)
 
-    train_dataset = SampleDataset(train_samples, model.ALIVE_TOKEN, model.DEATH_TOKEN)
-    val_dataset = SampleDataset(val_samples, model.ALIVE_TOKEN, model.DEATH_TOKEN)
+    # Pre-stack into contiguous tensors (avoids per-item numpy->torch overhead)
+    print("Stacking into tensors...")
+    train_frames_t = torch.from_numpy(np.stack(train_frames))
+    train_actions_t = torch.from_numpy(np.stack(train_actions))
+    train_levels_t = torch.tensor(train_levels, dtype=torch.long)
+    val_frames_t = torch.from_numpy(np.stack(val_frames))
+    val_actions_t = torch.from_numpy(np.stack(val_actions))
+    val_levels_t = torch.tensor(val_levels, dtype=torch.long)
+    del train_frames, train_actions, train_levels
+    del val_frames, val_actions, val_levels
+
+    # Remap status column upfront: 0 -> ALIVE_TOKEN, 1 -> DEATH_TOKEN
+    for t in (train_frames_t, val_frames_t):
+        status = t[:, :, -1]
+        status[status == 0] = model.ALIVE_TOKEN
+        status[status == 1] = model.DEATH_TOKEN
+
+    train_dataset = TensorDataset(train_frames_t, train_actions_t, train_levels_t)
+    val_dataset = TensorDataset(val_frames_t, val_actions_t, val_levels_t)
     total_samples = len(train_dataset) + len(val_dataset)
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
-    print(f"Death frames: {n_deaths}/{total_samples} ({100*n_deaths/total_samples:.1f}%)")
+    print(f"Death frames: {n_deaths} unique, {n_deaths * args.death_oversample} after {args.death_oversample}x oversample ({100*n_deaths*args.death_oversample/total_samples:.1f}%)")
 
     param_count = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {param_count:,}")
@@ -269,6 +299,7 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                    weight_decay=args.weight_decay)
+    scaler = torch.GradScaler(device.type)
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(exist_ok=True)
@@ -282,11 +313,23 @@ def main():
             state = torch.load(resume_path, map_location=device, weights_only=False)
             model.load_state_dict(state["model"])
             optimizer.load_state_dict(state["optimizer"])
+            if "scaler" in state:
+                scaler.load_state_dict(state["scaler"])
             start_epoch = state["epoch"] + 1
             best_val_loss = state["best_val_loss"]
             print(f"Resumed from epoch {state['epoch']} (best val loss: {best_val_loss:.4f})")
         else:
             print("No checkpoint found, starting fresh.")
+
+    # torch.compile for fused ops (requires Triton — Linux/Colab only)
+    if sys.platform != "win32":
+        try:
+            model = torch.compile(model)
+            print("torch.compile enabled")
+        except Exception as e:
+            print(f"torch.compile not available, running eager: {e}")
+    else:
+        print("Skipping torch.compile (not supported on Windows)")
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=1e-5,
@@ -305,13 +348,15 @@ def main():
 
     patience_counter = 0
 
+    print("First epoch will be slower due to torch.compile tracing...")
     try:
         for epoch in range(start_epoch, args.epochs + 1):
             t0 = time.time()
             train_loss, train_acc, train_death_acc, train_cpc = train_epoch(
-                model, train_loader, optimizer,
+                model, train_loader, optimizer, scaler,
                 args.cpc_weight, device, token_noise=args.token_noise,
-                label_smoothing=args.label_smoothing)
+                label_smoothing=args.label_smoothing,
+                focal_gamma=args.focal_gamma)
             val_loss, val_acc, val_death_acc = val_epoch(
                 model, val_loader, device)
             scheduler.step()
@@ -333,35 +378,43 @@ def main():
             ])
             log_file.flush()
 
+            # Save full state
             torch.save({
                 "epoch": epoch,
-                "model": model.state_dict(),
+                "model": _unwrap(model).state_dict(),
                 "optimizer": optimizer.state_dict(),
                 "scheduler": scheduler.state_dict(),
+                "scaler": scaler.state_dict(),
                 "best_val_loss": best_val_loss,
             }, ckpt_dir / "transformer_state.pt")
 
             if val_loss < best_val_loss:
                 best_val_loss = val_loss
                 patience_counter = 0
-                torch.save(model.state_dict(), ckpt_dir / "transformer_best.pt")
+                torch.save(_unwrap(model).state_dict(), ckpt_dir / "transformer_best.pt")
             else:
                 patience_counter += 1
                 if args.patience > 0 and patience_counter >= args.patience:
                     print(f"\nEarly stopping: val loss did not improve for {args.patience} epochs.")
                     break
+
+            # Defragment CUDA memory periodically
+            if epoch % 2 == 0 and device.type == "cuda":
+                torch.cuda.empty_cache()
+
     except KeyboardInterrupt:
         print("\nInterrupted — saving checkpoint...")
         torch.save({
             "epoch": epoch,
-            "model": model.state_dict(),
+            "model": _unwrap(model).state_dict(),
             "optimizer": optimizer.state_dict(),
             "scheduler": scheduler.state_dict(),
+            "scaler": scaler.state_dict(),
             "best_val_loss": best_val_loss,
         }, ckpt_dir / "transformer_state.pt")
 
     log_file.close()
-    torch.save(model.state_dict(), ckpt_dir / "transformer_final.pt")
+    torch.save(_unwrap(model).state_dict(), ckpt_dir / "transformer_final.pt")
     print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
     print(f"Checkpoints saved to {ckpt_dir}/")
 
