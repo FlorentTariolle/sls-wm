@@ -8,7 +8,6 @@ Usage:
 
 import argparse
 import csv
-import json
 import sys
 import time
 from pathlib import Path
@@ -58,10 +57,9 @@ def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
 
     use_amp = device.type == "cuda"
 
-    for frame_tokens, actions, level_ids in loader:
+    for frame_tokens, actions in loader:
         frame_tokens = frame_tokens.to(device, non_blocking=True)
         actions = actions.to(device, non_blocking=True)
-        level_ids = level_ids.to(device, non_blocking=True)
 
         target = frame_tokens[:, -1]  # (B, 65)
 
@@ -76,7 +74,7 @@ def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
             frame_tokens = torch.cat([ctx, frame_tokens[:, -1:]], dim=1)
 
         with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
-            logits, cpc_loss = model(frame_tokens, actions, level_ids)
+            logits, cpc_loss = model(frame_tokens, actions)
             token_loss = focal_cross_entropy(
                 logits.reshape(-1, vocab),
                 target.reshape(-1),
@@ -122,15 +120,14 @@ def val_epoch(model, loader, device):
 
     use_amp = device.type == "cuda"
 
-    for frame_tokens, actions, level_ids in loader:
+    for frame_tokens, actions in loader:
         frame_tokens = frame_tokens.to(device, non_blocking=True)
         actions = actions.to(device, non_blocking=True)
-        level_ids = level_ids.to(device, non_blocking=True)
 
         target = frame_tokens[:, -1]
 
         with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
-            logits, _ = model(frame_tokens, actions, level_ids)
+            logits, _ = model(frame_tokens, actions)
 
         visual_target = target[:, :tpf]
         visual_logits = logits[:, :tpf]
@@ -207,8 +204,8 @@ def main():
 
     K = args.context_frames
     TPF = args.tokens_per_frame
-    train_frames, train_actions, train_levels = [], [], []
-    val_frames, val_actions, val_levels = [], [], []
+    train_frames, train_actions = [], []
+    val_frames, val_actions = [], []
 
     n_deaths = 0
     for ep in all_episodes:
@@ -218,19 +215,11 @@ def main():
         if T < K + 1:
             continue
 
-        # Level ID
-        level_id = 0
-        meta_path = ep / "metadata.json"
-        if meta_path.exists():
-            meta = json.loads(meta_path.read_text())
-            level_id = meta.get("level", 1) - 1
-
         is_clear = "clear" in ep.name
 
         is_val = ep.name in val_episodes
         f_list = val_frames if is_val else train_frames
         a_list = val_actions if is_val else train_actions
-        l_list = val_levels if is_val else train_levels
 
         for i in range(T - K):
             frame_window = tokens[i:i + K + 1].astype(np.int64)  # (K+1, TPF)
@@ -250,7 +239,6 @@ def main():
             for _ in range(repeats):
                 f_list.append(frame_with_status)
                 a_list.append(action_window)
-                l_list.append(level_id)
 
     # Create model first to get token indices
     model = WorldModel(
@@ -268,12 +256,10 @@ def main():
     print("Stacking into tensors...")
     train_frames_t = torch.from_numpy(np.stack(train_frames))
     train_actions_t = torch.from_numpy(np.stack(train_actions))
-    train_levels_t = torch.tensor(train_levels, dtype=torch.long)
     val_frames_t = torch.from_numpy(np.stack(val_frames))
     val_actions_t = torch.from_numpy(np.stack(val_actions))
-    val_levels_t = torch.tensor(val_levels, dtype=torch.long)
-    del train_frames, train_actions, train_levels
-    del val_frames, val_actions, val_levels
+    del train_frames, train_actions
+    del val_frames, val_actions
 
     # Remap status column upfront: 0 -> ALIVE_TOKEN, 1 -> DEATH_TOKEN
     for t in (train_frames_t, val_frames_t):
@@ -281,8 +267,8 @@ def main():
         status[status == 0] = model.ALIVE_TOKEN
         status[status == 1] = model.DEATH_TOKEN
 
-    train_dataset = TensorDataset(train_frames_t, train_actions_t, train_levels_t)
-    val_dataset = TensorDataset(val_frames_t, val_actions_t, val_levels_t)
+    train_dataset = TensorDataset(train_frames_t, train_actions_t)
+    val_dataset = TensorDataset(val_frames_t, val_actions_t)
     total_samples = len(train_dataset) + len(val_dataset)
     print(f"Train samples: {len(train_dataset)}, Val samples: {len(val_dataset)}")
     print(f"Death frames: {n_deaths} unique, {n_deaths * args.death_oversample} after {args.death_oversample}x oversample ({100*n_deaths*args.death_oversample/total_samples:.1f}%)")

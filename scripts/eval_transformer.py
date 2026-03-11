@@ -140,11 +140,6 @@ def main():
             if T < K + 1:
                 continue
 
-            meta_path = ep / "metadata.json"
-            level_id = 0
-            if meta_path.exists():
-                level_id = json.loads(meta_path.read_text()).get("level", 1) - 1
-
             is_clear = "clear" in ep.name
 
             # Build windows with status tokens
@@ -168,10 +163,8 @@ def main():
             for b in range(0, len(all_frames), batch_size):
                 f_batch = torch.from_numpy(all_frames[b:b + batch_size]).to(device)
                 a_batch = torch.from_numpy(all_actions[b:b + batch_size]).to(device)
-                bs = f_batch.size(0)
-                l_batch = torch.full((bs,), level_id, dtype=torch.long, device=device)
                 target = f_batch[:, -1, :TPF]  # visual tokens only
-                logits, _ = model(f_batch, a_batch, l_batch)
+                logits, _ = model(f_batch, a_batch)
                 preds = logits[:, :TPF].argmax(dim=-1)
                 total_correct += (preds == target).sum().item()
                 total_tokens += target.numel()
@@ -186,11 +179,9 @@ def main():
         actions = np.load(ep / "actions.npy")
         meta_path = ep / "metadata.json"
         level = "?"
-        level_id = 0
         if meta_path.exists():
             meta = json.loads(meta_path.read_text())
             level = meta.get("level", "?")
-            level_id = meta.get("level", 1) - 1
 
         # Context: first K frames with ALIVE status
         ctx_tokens = tokens[:K].copy()  # (K, TPF)
@@ -200,8 +191,6 @@ def main():
 
         predicted_frames = []
         actual_frames = []
-
-        level_t = torch.tensor([level_id], dtype=torch.long, device=device)
 
         with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=device.type == "cuda"):
             for step in range(args.rollout_steps):
@@ -214,7 +203,7 @@ def main():
                 ctx_t = torch.from_numpy(ctx_with_status.astype(np.int64)).unsqueeze(0).to(device)
                 ctx_a = torch.from_numpy(ctx_actions.astype(np.int64)).unsqueeze(0).to(device)
                 pred_visual, death_prob = model.predict_next_frame(
-                    ctx_t, ctx_a, level_t,
+                    ctx_t, ctx_a,
                     temperature=args.temperature, top_k=args.top_k,
                     top_p=args.top_p)
                 pred_np = pred_visual[0].cpu().numpy()

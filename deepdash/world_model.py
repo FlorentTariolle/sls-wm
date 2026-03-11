@@ -43,7 +43,6 @@ class WorldModel(nn.Module):
         self,
         vocab_size: int = 1000,
         n_actions: int = 2,
-        n_levels: int = 8,
         embed_dim: int = 128,
         n_heads: int = 4,
         n_layers: int = 6,
@@ -73,7 +72,6 @@ class WorldModel(nn.Module):
         # Embeddings (no absolute positional — using RoPE)
         self.token_embed = nn.Embedding(self.full_vocab_size, embed_dim)
         self.action_embed = nn.Embedding(n_actions, embed_dim)
-        self.level_embed = nn.Embedding(n_levels, embed_dim)
 
         # RoPE precomputed frequencies
         head_dim = embed_dim // n_heads
@@ -202,14 +200,13 @@ class WorldModel(nn.Module):
 
         return total_loss / max(n_pairs, 1)
 
-    def forward(self, frame_tokens, actions, level_ids=None):
+    def forward(self, frame_tokens, actions):
         """Forward pass.
 
         Args:
             frame_tokens: (B, K+1, tokens_per_frame+1) long — K context + 1 target.
                           Last column is the status token (ALIVE or DEATH).
             actions: (B, K) long — action for each context frame.
-            level_ids: (B,) long — level index (0-based).
 
         Returns:
             logits: (B, tokens_per_frame+1, full_vocab_size) — predictions for target.
@@ -227,9 +224,6 @@ class WorldModel(nn.Module):
         parts.append(self.token_embed(frame_tokens[:, K]))        # (B, 65, D) target
 
         x = torch.cat(parts, dim=1)  # (B, seq_len, D)
-
-        if level_ids is not None:
-            x = x + self.level_embed(level_ids).unsqueeze(1)
         x = self.embed_drop(x)
 
         for block in self.blocks:
@@ -282,7 +276,7 @@ class WorldModel(nn.Module):
         return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     @torch.no_grad()
-    def predict_next_frame(self, frame_tokens, actions, level_ids=None,
+    def predict_next_frame(self, frame_tokens, actions,
                            temperature=0.0, top_k=0, top_p=0.0):
         """Predict next frame tokens + death autoregressively (KV-cached).
 
@@ -293,7 +287,6 @@ class WorldModel(nn.Module):
             frame_tokens: (B, K, tokens_per_frame+1) long — K context frames
                           with status tokens.
             actions: (B, K) long — actions for context frames.
-            level_ids: (B,) long — level index.
             temperature: Sampling temperature. 0 = greedy (default).
             top_k: Keep only top-k logits. 0 = disabled.
             top_p: Nucleus sampling threshold. 0 = disabled.
@@ -316,9 +309,6 @@ class WorldModel(nn.Module):
             parts.append(act.unsqueeze(1))                        # (B, 1, D)
         x = torch.cat(parts, dim=1)  # (B, ctx_len, D)
 
-        if level_ids is not None:
-            x = x + self.level_embed(level_ids).unsqueeze(1)
-
         ctx_len = K * (self.block_size + 1)
         ctx_mask = self.attn_mask[:ctx_len, :ctx_len]
         rope_cos_ctx = self.rope_cos[:ctx_len]
@@ -340,8 +330,6 @@ class WorldModel(nn.Module):
         # --- Phase 2: Decode target tokens 1..64 ---
         for t in range(self.block_size - 1):
             tok = self.token_embed(predicted[:, t:t + 1])  # (B, 1, D)
-            if level_ids is not None:
-                tok = tok + self.level_embed(level_ids).unsqueeze(1)
 
             pos = ctx_len + t
             rope_cos_t = self.rope_cos[pos:pos + 1]
