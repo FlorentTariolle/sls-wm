@@ -154,7 +154,7 @@ The initial dataset was recorded on the first official levels of the game (level
 * **VQ-VAE:** van den Oord, A., Vinyals, O., & Kavukcuoglu, K. (2017). *Neural Discrete Representation Learning*. [arXiv:1711.00937](https://arxiv.org/abs/1711.00937)
 * **Transformer World Model (IRIS):** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
 * **CPC:** Oord, A. van den, Li, Y., & Vinyals, O. (2018). *Representation Learning with Contrastive Predictive Coding*. [arXiv:1807.03748](https://arxiv.org/abs/1807.03748)
-* **AC-CPC (TWISTER):** Burchert, J., et al. (2025). *TWISTER: World Model Conditioned on Tokenized Self-Predictions*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
+* **AC-CPC (TWISTER):** Burchert, J., et al. (2025). *Learning Transformer-based World Models with Contrastive Predictive Coding*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
 * **JEPA:** LeCun, Y. (2022). *A Path Towards Autonomous Machine Intelligence*. [OpenReview](https://openreview.net/pdf?id=BZ5a1r-kVsf)
 * **Block-Causal Attention:** Gupta, A., et al. (2025). *Improving Transformer World Models for Data-Efficient RL*. [arXiv:2502.01591](https://arxiv.org/abs/2502.01591)
 * **Foundational RL:** Mnih, V., et al. (2013). *Playing Atari with Deep Reinforcement Learning*. [arXiv:1312.5602](https://arxiv.org/abs/1312.5602)
