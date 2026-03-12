@@ -7,7 +7,7 @@
 #SBATCH -n 1
 #SBATCH --cpus-per-gpu 8
 #SBATCH --mem 64G
-#SBATCH --time=04:00:00
+#SBATCH --time=08:00:00
 
 # Train CMA-ES controller in dream rollouts on A100.
 # Step 1: tokenize episodes with frozen FSQ-VAE (if not already done)
@@ -35,10 +35,10 @@ echo "=== Step 2: Train CMA-ES Controller ==="
 python -u scripts/train_controller.py \
     --transformer-checkpoint checkpoints/transformer_best.pt \
     --episodes-dir data/episodes \
-    --max-generations 200 \
+    --max-generations 500 \
     --popsize 256 \
     --sigma0 0.5 \
-    --n-episodes 16 \
+    --n-episodes 64 \
     --max-dream-steps 20 \
     --death-threshold 0.5 \
     --context-frames 4 \
