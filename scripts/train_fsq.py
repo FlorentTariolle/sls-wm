@@ -15,9 +15,8 @@ from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
-from torchvision import transforms
-
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.fsq import FSQVAE, fsqvae_loss, grwm_slowness, grwm_uniformity
 
@@ -28,7 +27,7 @@ class FramePairDataset(Dataset):
     Each sample is (frame_t, frame_t+1). Split by episode, not by frame.
     """
 
-    def __init__(self, episode_dirs, augment=False, device=None):
+    def __init__(self, episode_dirs, device=None):
         self.pairs = []
         for ep_dir in episode_dirs:
             frames = np.load(ep_dir / "frames.npy")  # (T, 64, 64) uint8
@@ -46,30 +45,32 @@ class FramePairDataset(Dataset):
             self.frames_t = self.frames_t.to(device)
             self.frames_t1 = self.frames_t1.to(device)
 
-        self.augment = augment
-
     def __len__(self):
         return len(self.frames_t)
 
     def __getitem__(self, idx):
-        ft = self.frames_t[idx]
-        ft1 = self.frames_t1[idx]
-        if self.augment:
-            # Same random shift for both frames
-            pad = 4
-            i, j = torch.randint(0, 2 * pad + 1, (2,)).tolist()
-            ft = transforms.functional.pad(ft, pad, padding_mode='edge')
-            ft = transforms.functional.crop(ft, i, j, 64, 64)
-            ft1 = transforms.functional.pad(ft1, pad, padding_mode='edge')
-            ft1 = transforms.functional.crop(ft1, i, j, 64, 64)
-        return ft, ft1
+        return self.frames_t[idx], self.frames_t1[idx]
+
+
+def augment_batch(ft, ft1, pad=4):
+    """Batch-level random shift augmentation (same shift for both frames)."""
+    B = ft.size(0)
+    # Pad with edge replication: (B, 1, 64, 64) -> (B, 1, 72, 72)
+    padded_t = F.pad(ft, [pad] * 4, mode='replicate')
+    padded_t1 = F.pad(ft1, [pad] * 4, mode='replicate')
+    # Random crop offset (same for entire batch per call)
+    i = torch.randint(0, 2 * pad + 1, (1,)).item()
+    j = torch.randint(0, 2 * pad + 1, (1,)).item()
+    return padded_t[:, :, i:i+64, j:j+64], padded_t1[:, :, i:i+64, j:j+64]
 
 
 def train_epoch(model, loader, optimizer, alpha_slow, alpha_uniform,
-                scaler=None, amp_dtype=None):
+                scaler=None, amp_dtype=None, augment=False):
     model.train()
     total_recon, total_slow, total_uniform, n = 0, 0, 0, 0
     for ft, ft1 in loader:
+        if augment:
+            ft, ft1 = augment_batch(ft, ft1)
         with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
             recon_t, z_e_t, _ = model(ft)
             recon_t1, z_e_t1, _ = model(ft1)
@@ -152,8 +153,8 @@ def main():
 
     print(f"Episodes: {len(all_episodes)} total, {len(train_eps)} train, {len(val_eps)} val")
 
-    train_dataset = FramePairDataset(train_eps, augment=True, device=device)
-    val_dataset = FramePairDataset(val_eps, augment=False, device=device)
+    train_dataset = FramePairDataset(train_eps, device=device)
+    val_dataset = FramePairDataset(val_eps, device=device)
     print(f"Frame pairs: {len(train_dataset)} train, {len(val_dataset)} val")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
@@ -203,7 +204,7 @@ def main():
             t0 = time.time()
             train_recon, train_slow, train_uniform = train_epoch(
                 model, train_loader, optimizer, args.alpha_slow, args.alpha_uniform,
-                scaler=scaler, amp_dtype=amp_dtype)
+                scaler=scaler, amp_dtype=amp_dtype, augment=True)
             val_recon = val_epoch(model, val_loader, amp_dtype=amp_dtype)
             scheduler.step()
             dt = time.time() - t0
