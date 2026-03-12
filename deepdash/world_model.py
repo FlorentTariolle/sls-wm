@@ -363,7 +363,8 @@ class WorldModel(nn.Module):
 
     @torch.no_grad()
     def predict_next_frame(self, frame_tokens, actions,
-                           temperature=0.0, top_k=0, top_p=0.0):
+                           temperature=0.0, top_k=0, top_p=0.0,
+                           return_hidden=False):
         """Predict next frame tokens + death autoregressively (KV-cached).
 
         Uses KV cache: one prefill pass over context, then single-token
@@ -376,10 +377,13 @@ class WorldModel(nn.Module):
             temperature: Sampling temperature. 0 = greedy (default).
             top_k: Keep only top-k logits. 0 = disabled.
             top_p: Nucleus sampling threshold. 0 = disabled.
+            return_hidden: If True, also return the hidden state h_t (128d)
+                          at the last context position (post layer-norm).
 
         Returns:
             predicted: (B, tokens_per_frame) long — predicted visual tokens.
             death_prob: (B,) float — probability of death.
+            h_t: (B, embed_dim) float — only if return_hidden=True.
         """
         B = frame_tokens.size(0)
         TPF = self.tokens_per_frame
@@ -406,6 +410,7 @@ class WorldModel(nn.Module):
                           use_cache=True)
             past_kvs.append(kv)
         x = self.ln_f(x)
+        h_t = x[:, -1] if return_hidden else None
 
         # First target token: predicted from last context position (GPT shift)
         logits = self.head(x[:, -1])  # (B, full_vocab_size)
@@ -437,6 +442,8 @@ class WorldModel(nn.Module):
         # Death probability from the final logits (status token prediction)
         death_prob = F.softmax(logits, dim=-1)[:, self.DEATH_TOKEN]
 
+        if return_hidden:
+            return predicted[:, :TPF], death_prob, h_t
         return predicted[:, :TPF], death_prob
 
 

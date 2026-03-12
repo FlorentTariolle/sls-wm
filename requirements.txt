@@ -6,3 +6,4 @@ opencv-python
 Pillow
 keyboard
 mss
+cma
