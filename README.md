@@ -81,12 +81,10 @@ The original architecture uses an LSTM (MDN-RNN) operating on flattened continuo
 * **Decision:** Replaced the RNN with a Transformer operating on discrete FSQ codes.
 * **Benefit:** Preserves the full 51x compression ratio (64 tokens x $\log_2(1000) \approx 10$ bits = 638 bits vs 32,768 bits) — a 3.2x improvement over the RNN approach. The Transformer classifies over a 1000-entry vocabulary rather than regressing continuous vectors, and its own embedding layer decouples working dimensionality from the FSQ latent dimension.
 
-### 3.4 Inference Strategy (Linear Controller + Beam Search Planning)
+### 3.4 Inference Strategy
 
-Two complementary approaches are planned for Phase 3:
-
-* **Linear Controller (CMA-ES):** Reactive policy ($Action = W \cdot h_t$) trained via evolution in the dream environment. $O(1)$ inference, suitable for high-frequency decisions. Canonical approach from Ha & Schmidhuber (2018).
-* **Beam Search Planning:** Geometry Dash is deterministic with a binary action space — ideal for tree search. At each frame, branch into jump/no-jump, roll out each branch in the world model for H=10-15 steps, prune branches that predict death, execute the best surviving action. Re-anchoring to real observations every frame mitigates world model drift.
+* **Primary: Linear Controller (CMA-ES).** Reactive policy ($Action = W \cdot h_t$) trained via evolution in the dream environment. $O(1)$ inference, suitable for high-frequency decisions. Canonical approach from Ha & Schmidhuber (2018).
+* **Potential extension: Beam Search Planning.** Geometry Dash is deterministic with a binary action space, which makes tree search attractive in principle. At each frame, branch into jump/no-jump, roll out each branch in the world model for $H \leq C$ steps (where $C$ is the context size), prune branches that predict death, execute the best surviving action. $H$ must stay within the context window so at least one real observation anchors the rollout — beyond that, compounding prediction errors degrade branch quality. This idea may be explored if the linear controller struggles with obstacle patterns requiring multi-step planning, but the compute cost ($2^H$ forward passes per decision) may be prohibitive at 30 FPS.
 
 ### 3.5 Input Preprocessing (64x64 Square Crop, Sobel Edges)
 
