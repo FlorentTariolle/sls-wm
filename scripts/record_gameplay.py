@@ -107,13 +107,19 @@ def save_episode(episode_dir: Path, frames: list, actions: list,
           f"{duration:.1f}s, {fps_actual:.1f} FPS actual")
 
 
-def next_episode_id(episodes_dir: Path) -> int:
-    """Find the next available episode number."""
-    existing = sorted(episodes_dir.glob("ep_*"))
-    if not existing:
-        return 1
-    last = existing[-1].name
-    return int(last.split("_")[1]) + 1
+def next_episode_id(episodes_dir: Path, user_id: int = 0) -> int:
+    """Find the next available episode number within a user's range.
+
+    User 0: ep_0001–ep_9999, User 1: ep_10001–ep_19999, etc.
+    """
+    range_start = user_id * 10000 + 1
+    range_end = range_start + 9999
+    max_id = range_start - 1
+    for ep in episodes_dir.glob("ep_*"):
+        ep_id = int(ep.name.split("_")[1])
+        if range_start <= ep_id <= range_end and ep_id > max_id:
+            max_id = ep_id
+    return max_id + 1
 
 
 # Auto-record states
@@ -126,6 +132,9 @@ STATE_WAIT_ATTEMPT = "DELAY"  # Respawned, waiting for "ATTEMPT" to clear
 def main():
     parser = argparse.ArgumentParser(
         description="Record Geometry Dash gameplay for training data")
+    parser.add_argument("--user", type=int, default=0,
+                        help="User ID for episode numbering offset "
+                             "(0 = ep_0001-9999, 1 = ep_10001-19999, ...)")
     parser.add_argument("--target-size", type=int, default=64,
                         help="Output frame size (default: 64)")
     parser.add_argument("--fps", type=int, default=30,
@@ -169,7 +178,7 @@ def main():
 
     episodes_dir = Path(args.output_dir)
     episodes_dir.mkdir(parents=True, exist_ok=True)
-    episode_id = next_episode_id(episodes_dir)
+    episode_id = next_episode_id(episodes_dir, args.user)
 
     # DXGI hardware-accelerated capture
     cam = dxcam.create()
