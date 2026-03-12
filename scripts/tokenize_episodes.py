@@ -61,8 +61,12 @@ def main():
     print(f"Found {len(episodes)} episodes")
 
     total_frames = 0
+    skipped = 0
     with torch.no_grad():
         for ep in episodes:
+            if (ep / "tokens.npy").exists():
+                skipped += 1
+                continue
             frames = np.load(ep / "frames.npy")  # (T, 64, 64) uint8
             T = len(frames)
             total_frames += T
@@ -78,7 +82,9 @@ def main():
             np.save(ep / "tokens.npy", tokens)
             print(f"  {ep.name}: {T} frames -> {tokens.shape} tokens")
 
-    print(f"\nDone. Tokenized {total_frames} frames across {len(episodes)} episodes.")
+    if skipped:
+        print(f"Skipped {skipped} already-tokenized episodes.")
+    print(f"\nDone. Tokenized {total_frames} frames across {len(episodes) - skipped} episodes.")
 
 
 if __name__ == "__main__":
