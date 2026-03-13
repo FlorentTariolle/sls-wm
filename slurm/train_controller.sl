@@ -44,9 +44,9 @@ python -u scripts/train_controller.py \
     --context-frames 4 \
     --vocab-size 1000 \
     --tokens-per-frame 64 \
-    --embed-dim 128 \
-    --n-heads 4 \
-    --n-layers 6 \
+    --embed-dim 256 \
+    --n-heads 8 \
+    --n-layers 8 \
     --dropout 0.1 \
     --checkpoint-dir checkpoints \
     --seed 42 \
