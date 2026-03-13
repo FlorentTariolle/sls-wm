@@ -316,13 +316,13 @@ def main():
         else:
             print("No checkpoint found, starting fresh.")
 
-    # torch.compile for fused ops (requires Triton — Linux/Colab only)
+    # torch.compile the transformer backbone only (embedding/masking/CPC stay eager)
     if sys.platform != "win32":
         try:
             import torch._inductor.config as inductor_cfg
             inductor_cfg.compile_threads = min(os.cpu_count() or 1, 8)
-            model = torch.compile(model, dynamic=True)
-            print(f"torch.compile enabled (dynamic=True, {inductor_cfg.compile_threads} compile threads)")
+            model._backbone_forward = torch.compile(model._backbone_forward)
+            print(f"torch.compile enabled (backbone only, {inductor_cfg.compile_threads} compile threads)")
         except Exception as e:
             print(f"torch.compile not available, running eager: {e}")
     else:

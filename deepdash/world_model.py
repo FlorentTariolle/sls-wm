@@ -122,6 +122,12 @@ class WorldModel(nn.Module):
 
         self._init_weights()
 
+    def _backbone_forward(self, x):
+        """Run transformer blocks + final layernorm (compile-friendly hot path)."""
+        for block in self.blocks:
+            x, _ = block(x, self.attn_mask, self.rope_cos, self.rope_sin)
+        return self.ln_f(x)
+
     def _build_position_ids(self):
         """Build 3D position IDs (row, col, frame) for each sequence position.
 
@@ -340,9 +346,7 @@ class WorldModel(nn.Module):
         x = torch.cat(parts, dim=1)  # (B, seq_len, D)
         x = self.embed_drop(x)
 
-        for block in self.blocks:
-            x, _ = block(x, self.attn_mask, self.rope_cos, self.rope_sin)
-        x = self.ln_f(x)
+        x = self._backbone_forward(x)
 
         # No GPT-shift: each target position predicts its own token
         ctx_end = K * (self.block_size + 1)

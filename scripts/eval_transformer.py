@@ -100,10 +100,10 @@ def main():
     model.eval()
     if sys.platform != "win32":
         try:
-            model = torch.compile(model)
+            model._backbone_forward = torch.compile(model._backbone_forward)
         except Exception:
             pass
-    _m = model._orig_mod if hasattr(model, "_orig_mod") else model
+    _m = model
 
     # Find episodes
     episodes_dir = Path(args.episodes_dir)
