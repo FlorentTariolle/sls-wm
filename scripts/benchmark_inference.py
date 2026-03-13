@@ -1,8 +1,8 @@
-"""Benchmark real-time inference latency of the full pipeline.
+"""Benchmark inference latency for real-time play.
 
-Measures predict_next_frame (prefill + decode) which is the bottleneck
-for real-time play. In deployment, only prefill is needed (h_t for the
-controller), but we benchmark the full call for a conservative estimate.
+Two modes:
+  - Prefill only: context → h_t (what real-time play actually needs)
+  - Full predict_next_frame: prefill + 65-step autoregressive decode (dream rollouts)
 
 Usage:
     python scripts/benchmark_inference.py
@@ -19,6 +19,30 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.world_model import WorldModel
+
+
+def prefill_only(model, ctx_s, actions):
+    """Run only the prefill pass to extract h_t (no autoregressive decode)."""
+    K = model.context_frames
+    BS = model.block_size
+
+    parts = []
+    for i in range(K):
+        parts.append(model.token_embed(ctx_s[:, i]))
+        act = model.action_embed(actions[:, i])
+        parts.append(act.unsqueeze(1))
+    x = torch.cat(parts, dim=1)
+
+    ctx_len = K * (BS + 1)
+    ctx_mask = model.attn_mask[:ctx_len, :ctx_len]
+    rope_cos = model.rope_cos[:ctx_len]
+    rope_sin = model.rope_sin[:ctx_len]
+
+    for block in model.blocks:
+        x, _ = block(x, ctx_mask, rope_cos, rope_sin)
+    x = model.ln_f(x)
+    h_t = x[:, -1]  # hidden state at last context position
+    return h_t
 
 
 def main():
@@ -57,29 +81,33 @@ def main():
     ctx_s = torch.cat([ctx, status], dim=2)
     actions = torch.zeros(1, 4, dtype=torch.long, device=device)
 
-    # Warmup
-    with torch.no_grad():
-        for _ in range(args.warmup):
-            model.predict_next_frame(ctx_s, actions, return_hidden=True)
-    if device.type == "cuda":
-        torch.cuda.synchronize()
-
-    # Benchmark
-    with torch.no_grad():
-        start = time.perf_counter()
-        for _ in range(args.n_runs):
-            model.predict_next_frame(ctx_s, actions, return_hidden=True)
+    def sync():
         if device.type == "cuda":
             torch.cuda.synchronize()
-        elapsed_ms = (time.perf_counter() - start) / args.n_runs * 1000
 
-    print(f"\npredict_next_frame (prefill + decode):")
-    print(f"  {elapsed_ms:.2f} ms  (mean over {args.n_runs} runs)")
-    print(f"  Budget 30 FPS: 33.3 ms")
-    if elapsed_ms < 33.3:
-        print(f"  -> OK ({33.3 / elapsed_ms:.1f}x margin)")
-    else:
-        print(f"  -> TOO SLOW ({elapsed_ms / 33.3:.1f}x over budget)")
+    def bench(fn, label):
+        with torch.no_grad():
+            for _ in range(args.warmup):
+                fn()
+            sync()
+            start = time.perf_counter()
+            for _ in range(args.n_runs):
+                fn()
+            sync()
+            ms = (time.perf_counter() - start) / args.n_runs * 1000
+        print(f"  {label}: {ms:.2f} ms", end="")
+        if ms < 33.3:
+            print(f"  -> OK ({33.3 / ms:.1f}x margin)")
+        else:
+            print(f"  -> TOO SLOW ({ms / 33.3:.1f}x over budget)")
+        return ms
+
+    print(f"\nBudget: 33.3 ms (30 FPS)\n")
+
+    bench(lambda: prefill_only(model, ctx_s, actions),
+          "Prefill only (real-time play)")
+    bench(lambda: model.predict_next_frame(ctx_s, actions, return_hidden=True),
+          "Full predict_next_frame (dream rollouts)")
 
 
 if __name__ == "__main__":
