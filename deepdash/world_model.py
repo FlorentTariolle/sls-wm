@@ -26,6 +26,7 @@ References:
 """
 
 import math
+import random
 
 import torch
 import torch.nn as nn
@@ -317,16 +318,16 @@ class WorldModel(nn.Module):
         # MaskGIT: randomly mask target frame tokens
         target_embed = self.token_embed(frame_tokens[:, K])  # (B, 65, D)
         if mask_ratio is None:
-            # Cosine schedule sampling during training
-            r = torch.cos(torch.rand(1, device=device) * math.pi * 0.5).item()
+            # Cosine schedule sampling (Python random — no torch graph break)
+            r = math.cos(random.random() * math.pi * 0.5)
             n_mask = max(1, int(r * self.block_size))
         else:
             n_mask = max(1, int(mask_ratio * self.block_size))
 
-        perm = torch.randperm(self.block_size, device=device)
-        mask_idx = perm[:n_mask]
-        mask = torch.zeros(B, self.block_size, dtype=torch.bool, device=device)
-        mask[:, mask_idx] = True
+        # Rank-based masking: compile-friendly (no dynamic slice / advanced indexing)
+        noise = torch.rand(self.block_size, device=device)
+        ranks = noise.argsort().argsort()  # rank 0 = lowest noise
+        mask = (ranks < n_mask).unsqueeze(0).expand(B, -1)
 
         target_embed = torch.where(
             mask.unsqueeze(-1),
