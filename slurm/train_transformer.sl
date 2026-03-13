@@ -52,6 +52,7 @@ python -u scripts/train_transformer.py \
     --label-smoothing 0.1 \
     --focal-gamma 2.0 \
     --death-oversample 15 \
+    --steps-per-epoch 500 \
     --checkpoint-dir checkpoints \
     --patience 30 \
     --seed 42
