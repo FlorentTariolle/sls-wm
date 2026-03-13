@@ -113,11 +113,10 @@ def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
 
 
 @torch.no_grad()
-def val_epoch(model, loader, device):
+def val_epoch(model, loader, device, label_smoothing=0.0, focal_gamma=2.0):
     model.eval()
     m = _unwrap(model)
     tpf = m.tokens_per_frame
-    vocab = m.full_vocab_size
     total_loss, total_correct, total_tokens = 0, 0, 0
     total_death_correct, total_death_samples = 0, 0
     total_cpc_loss = 0.0
@@ -133,10 +132,12 @@ def val_epoch(model, loader, device):
         with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
             logits, cpc_loss, mask = model(frame_tokens, actions, mask_ratio=1.0)
 
-        # All tokens masked → loss on all positions
-        token_loss = F.cross_entropy(
-            logits.reshape(-1, vocab),
-            target.reshape(-1),
+        # All tokens masked → loss on all positions (same loss as training)
+        token_loss = focal_cross_entropy(
+            logits[mask],
+            target[mask],
+            gamma=focal_gamma,
+            label_smoothing=label_smoothing,
         )
 
         bs = frame_tokens.size(0)
@@ -366,9 +367,11 @@ def main():
         log_file = open(log_path, "w", newline="")
     log_writer = csv.writer(log_file)
     if not append:
-        log_writer.writerow(["epoch", "train_loss", "train_acc", "train_death_acc",
-                             "train_cpc", "val_loss", "val_acc", "val_death_acc",
-                             "val_cpc", "lr", "time_s"])
+        log_writer.writerow(["epoch", "train_total", "train_loss", "train_acc",
+                             "train_death_acc", "train_cpc",
+                             "val_total", "val_loss", "val_acc",
+                             "val_death_acc", "val_cpc",
+                             "gap", "lr", "time_s"])
 
     patience_counter = 0
 
@@ -382,24 +385,33 @@ def main():
                 label_smoothing=args.label_smoothing,
                 focal_gamma=args.focal_gamma)
             val_loss, val_acc, val_death_acc, val_cpc = val_epoch(
-                model, val_loader, device)
+                model, val_loader, device,
+                label_smoothing=args.label_smoothing,
+                focal_gamma=args.focal_gamma)
             scheduler.step()
             dt = time.time() - t0
             lr = optimizer.param_groups[0]["lr"]
 
+            cpc_w = args.cpc_weight
+            train_total = train_loss + cpc_w * train_cpc
+            val_total = val_loss + cpc_w * val_cpc
+            gap = val_total - train_total
+
             print(
                 f"Epoch {epoch:3d}/{args.epochs} ({dt:.1f}s) | "
-                f"Train: loss={train_loss:.4f} acc={train_acc:.3f} "
+                f"Train: total={train_total:.4f} loss={train_loss:.4f} acc={train_acc:.3f} "
                 f"death={train_death_acc:.3f} cpc={train_cpc:.3f} | "
-                f"Val: loss={val_loss:.4f} acc={val_acc:.3f} "
+                f"Val: total={val_total:.4f} loss={val_loss:.4f} acc={val_acc:.3f} "
                 f"death={val_death_acc:.3f} cpc={val_cpc:.3f} | "
-                f"LR: {lr:.1e}"
+                f"gap={gap:+.4f} | LR: {lr:.1e}"
             )
 
             log_writer.writerow([
-                epoch, f"{train_loss:.6f}", f"{train_acc:.4f}", f"{train_death_acc:.4f}",
-                f"{train_cpc:.4f}", f"{val_loss:.6f}", f"{val_acc:.4f}",
-                f"{val_death_acc:.4f}", f"{val_cpc:.4f}", f"{lr:.1e}", f"{dt:.1f}"
+                epoch, f"{train_total:.6f}", f"{train_loss:.6f}", f"{train_acc:.4f}",
+                f"{train_death_acc:.4f}", f"{train_cpc:.4f}",
+                f"{val_total:.6f}", f"{val_loss:.6f}", f"{val_acc:.4f}",
+                f"{val_death_acc:.4f}", f"{val_cpc:.4f}",
+                f"{gap:.4f}", f"{lr:.1e}", f"{dt:.1f}"
             ])
             log_file.flush()
 
@@ -413,14 +425,14 @@ def main():
                 "best_val_loss": best_val_loss,
             }, ckpt_dir / "transformer_state.pt")
 
-            if val_loss < best_val_loss:
-                best_val_loss = val_loss
+            if val_total < best_val_loss:
+                best_val_loss = val_total
                 patience_counter = 0
                 torch.save(_unwrap(model).state_dict(), ckpt_dir / "transformer_best.pt")
             else:
                 patience_counter += 1
                 if args.patience > 0 and patience_counter >= args.patience:
-                    print(f"\nEarly stopping: val loss did not improve for {args.patience} epochs.")
+                    print(f"\nEarly stopping: val total loss did not improve for {args.patience} epochs.")
                     break
 
             # Defragment CUDA memory periodically
@@ -440,7 +452,7 @@ def main():
 
     log_file.close()
     torch.save(_unwrap(model).state_dict(), ckpt_dir / "transformer_final.pt")
-    print(f"\nTraining complete. Best val loss: {best_val_loss:.4f}")
+    print(f"\nTraining complete. Best val total loss: {best_val_loss:.4f}")
     print(f"Checkpoints saved to {ckpt_dir}/")
 
 
