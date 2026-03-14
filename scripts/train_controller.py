@@ -285,9 +285,12 @@ def main():
         "seed": args.seed,
         "maxiter": args.max_generations,
         "verbose": -1,  # we do our own logging
-        "tolx": 1e-8,    # prevent early stopping on small parameter changes
-        "tolfun": 1e-8,   # prevent early stopping on flat fitness
-        "tolstagnation": 500,  # don't stop on stagnation within max_generations
+        "tolx": 1e-12,
+        "tolfun": 1e-12,
+        "tolstagnation": int(1e9),
+        "tolflatfitness": int(1e9),
+        "tolfunhist": 1e-12,
+        "tolconditioncov": 1e30,
     })
 
     # CSV log
@@ -370,7 +373,8 @@ def main():
               f"best_ever {best_fitness_ever:.1f} | {elapsed:.1f}s")
 
     log_file.close()
-    print(f"\nDone. Best survival: {best_fitness_ever:.1f} steps")
+    print(f"\nStop reason: {es.stop()}")
+    print(f"Best survival: {best_fitness_ever:.1f} steps")
     print(f"Checkpoint: {ckpt_dir / 'controller_best.npy'}")
     print(f"Log: {log_path}")
 
