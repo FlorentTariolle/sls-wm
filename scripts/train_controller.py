@@ -47,7 +47,7 @@ def load_episodes(episodes_dir, context_frames):
     return episodes
 
 
-def sample_contexts(episodes, n, context_frames, rng, near_death_range=(6, 12)):
+def sample_contexts(episodes, n, context_frames, rng, near_death_range=(8, 20)):
     """Sample n contexts biased toward near-death windows.
 
     Every episode ends with death at frame T-1. Contexts are sampled so the
@@ -285,6 +285,9 @@ def main():
         "seed": args.seed,
         "maxiter": args.max_generations,
         "verbose": -1,  # we do our own logging
+        "tolx": 1e-8,    # prevent early stopping on small parameter changes
+        "tolfun": 1e-8,   # prevent early stopping on flat fitness
+        "tolstagnation": 500,  # don't stop on stagnation within max_generations
     })
 
     # CSV log

@@ -49,5 +49,4 @@ python -u scripts/train_controller.py \
     --n-layers 8 \
     --dropout 0.1 \
     --checkpoint-dir checkpoints \
-    --seed 42 \
-    --percentile-norm
+    --seed 42
