@@ -38,7 +38,7 @@ python -u scripts/train_transformer.py \
     --episodes-dir data/episodes \
     --epochs 200 \
     --batch-size 512 \
-    --lr 1e-4 \
+    --lr 1e-3 \
     --context-frames 4 \
     --vocab-size 1000 \
     --tokens-per-frame 64 \

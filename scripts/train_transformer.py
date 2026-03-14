@@ -455,7 +455,7 @@ def main():
         neighbor_table, neighbor_counts = None, None
 
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-5,
+        optimizer, T_max=args.epochs, eta_min=1e-4,
         last_epoch=start_epoch - 2 if start_epoch > 1 else -1)
 
     log_path = ckpt_dir / "transformer_log.csv"
