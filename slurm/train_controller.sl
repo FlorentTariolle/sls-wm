@@ -38,7 +38,7 @@ python -u scripts/train_controller.py \
     --max-generations 500 \
     --popsize 32 \
     --sigma0 0.5 \
-    --n-episodes 16 \
+    --n-episodes 64 \
     --max-dream-steps 20 \
     --death-threshold 0.5 \
     --context-frames 4 \
