@@ -540,8 +540,14 @@ def main():
     else:
         soft_target_matrix = None
 
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs, eta_min=1e-4,
+    warmup_epochs = 5
+    warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
+        optimizer, start_factor=1e-2, total_iters=warmup_epochs)
+    cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+        optimizer, T_max=args.epochs - warmup_epochs, eta_min=1e-4)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(
+        optimizer, [warmup_scheduler, cosine_scheduler],
+        milestones=[warmup_epochs],
         last_epoch=start_epoch - 2 if start_epoch > 1 else -1)
 
     log_path = ckpt_dir / "transformer_log.csv"
