@@ -237,8 +237,6 @@ def main():
     # Output
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--seed", type=int, default=42)
-    parser.add_argument("--compile", action="store_true",
-                        help="Use torch.compile on the world model")
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -264,12 +262,12 @@ def main():
     state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
     model.load_state_dict(state)
     model.eval()
-    if args.compile and sys.platform != "win32":
+    if sys.platform != "win32":
         try:
-            model = torch.compile(model)
-            print("Model compiled with torch.compile")
+            model._backbone_forward = torch.compile(model._backbone_forward)
+            print("torch.compile enabled (backbone only)")
         except Exception as e:
-            print(f"torch.compile failed: {e}")
+            print(f"torch.compile not available: {e}")
 
     # Load episodes
     episodes = load_episodes(args.episodes_dir, args.context_frames)
