@@ -51,6 +51,7 @@ python -u scripts/train_transformer.py \
     --token-noise 0.05 \
     --fsq-noise 0.05 \
     --label-smoothing 0.1 \
+    --fsq-sigma 1.0 \
     --focal-gamma 2.0 \
     --death-oversample 15 \
     --steps-per-epoch 500 \
