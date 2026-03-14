@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--checkpoint", default="checkpoints/fsq_best.pt")
     parser.add_argument("--episodes-dir", default="data/episodes")
     parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
-    parser.add_argument("--n-examples", type=int, default=5)
+    parser.add_argument("--n-examples", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="fsq_distances.png")
     args = parser.parse_args()
@@ -73,7 +73,8 @@ def main():
 
     n_cols = 1 + len(perturbations)  # original + perturbations
     fig, axes = plt.subplots(args.n_examples, n_cols,
-                             figsize=(n_cols * 1.6, args.n_examples * 1.6))
+                             figsize=(n_cols * 1.6, args.n_examples * 1.6),
+                             squeeze=False)
 
     with torch.no_grad():
         for row in range(args.n_examples):

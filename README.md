@@ -41,7 +41,24 @@ The system is composed of three distinct neural networks trained sequentially:
 * **Function:** Predicts the next frame's 64 tokens given the current tokenized state and action — a classification task over vocabulary 1002 (1000 visual codes + ALIVE + DEATH status tokens), not continuous regression. Death is predicted via a dedicated **death token** appended as the 65th position of each frame block, turning death prediction into the same next-token classification task.
 * **Decoding:** MaskGIT (Chang et al., 2022) — during training, a random cosine-scheduled subset of target tokens is masked and predicted. At inference, all tokens start masked and are iteratively unmasked in order of confidence over ~8 steps, enabling parallel decoding instead of 65 sequential autoregressive steps.
 * **Training Losses:** Focal cross-entropy on masked next-frame tokens + AC-CPC contrastive loss (TWISTER, ICLR 2025) that predicts future hidden states conditioned on actions.
-* **FSQ-structured label smoothing:** Standard label smoothing (Szegedy 2016) spreads probability mass uniformly across all wrong tokens — a ±1 FSQ neighbor (visually identical) receives the same target probability as a completely unrelated token. This is a misaligned objective: the model is equally penalized for predicting a semantically equivalent neighbor as for predicting visual nonsense. FSQ-structured label smoothing replaces the uniform distribution with a Gaussian kernel over squared FSQ coordinate distance: $w(a,b) = \exp(-d^2(a,b) / 2\sigma^2)$, where $d^2$ is the sum of squared per-dimension differences. Empirical validation showed that (1) ±1 in a single dimension produces near-identical reconstructions, (2) concentrated perturbations (+2 in one dim) cause more visual change than distributed ones (+1 in two dims), matching the squared distance's superlinear per-dimension penalty. The smoothing mass is thus concentrated on the ~6 immediate FSQ neighbors, giving the model explicit credit for "near-miss" predictions. Status tokens (ALIVE/DEATH) use hard targets — death prediction must be exact.
+* **FSQ-structured label smoothing:** Standard label smoothing (Szegedy 2016) spreads probability mass uniformly across all wrong tokens — a ±1 FSQ neighbor (visually identical) receives the same target probability as a completely unrelated token. This is a misaligned objective: the model is equally penalized for predicting a semantically equivalent neighbor as for predicting visual nonsense. FSQ-structured label smoothing replaces the uniform distribution with a Gaussian kernel over squared FSQ coordinate distance: $w(a,b) = \exp(-d^2(a,b) / 2\sigma^2)$, where $d^2$ is the sum of squared per-dimension differences. The smoothing mass is concentrated on the ~6 immediate FSQ neighbors, giving the model explicit credit for "near-miss" predictions. Status tokens (ALIVE/DEATH) use hard targets — death prediction must be exact.
+
+  **Empirical validation** (200 frames × 4 positions = 800 samples per perturbation type):
+
+  | FSQ neighbor visual similarity | FSQ distance vs visual difference |
+  |:---:|:---:|
+  | ![Neighbors](fsq_neighbors.png) | ![Distances](fsq_distances.png) |
+
+  | Perturbation | Mean Patch MSE | Ratio vs ±1 |
+  |:---|:---:|:---:|
+  | ±1 single dim | 0.000069 | 1.0× |
+  | +1 two dims | 0.000162 | 2.35× |
+  | +2 single dim | 0.000320 | 4.64× |
+  | +1 three dims | 0.000279 | 4.04× |
+  | +1 all dims | 0.000426 | 6.17× |
+  | +2 two dims | 0.000834 | 12.1× |
+
+  Key findings: (1) ±1 neighbors produce near-identical reconstructions (MSE ≈ 0.00007). (2) +2 in one dim is **1.98× worse** than +1 in two dims — concentrated perturbations hurt more than distributed ones, validating the squared distance formulation. (3) Dim 0 (8 levels) causes ~2× more visual change per step than dims 1–3 (5 levels), because the decoder allocates more visual information to the higher-capacity dimension — unweighted `sum(Δ²)` correctly reflects this.
 * **Regularization:**
   * **Spatial shift augmentation:** Episodes are re-tokenized through the frozen FSQ-VAE at multiple pixel offsets ({-4,-2,0,2,4} × {-3,0,3} with edge padding), creating 15 tokenization variants per episode (~15× data multiplier). Horizontal shifts are physically equivalent to a different camera scroll position.
   * **Dual token noise:** Random token replacement (5%) acts as context-forcing dropout, while **FSQ neighbor substitution** (5%) replaces tokens with ±1 neighbors in the FSQ mixed-radix space. FSQ neighbors decode to visually near-identical patches but are distinct token indices — this forces the Transformer's embedding layer to learn that geometrically adjacent codes are semantically equivalent, injecting the codebook's topological structure as an inductive bias. The two noise types are complementary: random noise forces global robustness, neighbor noise smooths the embedding manifold.

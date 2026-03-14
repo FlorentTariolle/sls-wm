@@ -30,7 +30,7 @@ def main():
     parser.add_argument("--checkpoint", default="checkpoints/fsq_best.pt")
     parser.add_argument("--episodes-dir", default="data/episodes")
     parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
-    parser.add_argument("--n-examples", type=int, default=5)
+    parser.add_argument("--n-examples", type=int, default=1)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--output", default="fsq_neighbors.png")
     args = parser.parse_args()
@@ -64,7 +64,8 @@ def main():
     # Layout: n_examples rows, (1 original + 1 recon + 2*n_dims neighbors) columns
     n_cols = 2 + 2 * n_dims
     fig, axes = plt.subplots(args.n_examples, n_cols,
-                             figsize=(n_cols * 1.5, args.n_examples * 1.5))
+                             figsize=(n_cols * 1.5, args.n_examples * 1.5),
+                             squeeze=False)
 
     col_labels = ["Original", "Recon"]
     for d in range(n_dims):
