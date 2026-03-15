@@ -113,6 +113,18 @@ def main():
         print(f"Shift augmentation: {len(aug_shifts)} shifted variants per episode")
         print(f"  Horizontal: {shifts_h}, Vertical: {shifts_v}")
 
+    def _tokens_valid(path):
+        """Check if tokens.npy exists and is not corrupt."""
+        if not path.exists():
+            return False
+        try:
+            np.load(path)
+            return True
+        except (EOFError, ValueError):
+            path.unlink()
+            print(f"  Deleted corrupt {path}")
+            return False
+
     total_frames = 0
     skipped = 0
     aug_created = 0
@@ -122,7 +134,7 @@ def main():
             frames = None  # lazy-load
 
             # --- Original (0,0) tokenization ---
-            if (ep / "tokens.npy").exists():
+            if _tokens_valid(ep / "tokens.npy"):
                 skipped += 1
             else:
                 frames = np.load(ep / "frames.npy")  # (T, 64, 64) uint8
@@ -136,7 +148,7 @@ def main():
             for dx, dy in aug_shifts:
                 aug_name = f"{ep.name}_s{dx:+d}_{dy:+d}"
                 aug_dir = episodes_dir / aug_name
-                if (aug_dir / "tokens.npy").exists():
+                if _tokens_valid(aug_dir / "tokens.npy"):
                     continue
 
                 if frames is None:
