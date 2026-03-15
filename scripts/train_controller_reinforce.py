@@ -23,7 +23,24 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.world_model import WorldModel
 from deepdash.controller import TransformerPolicy
 
-from scripts.train_controller import load_episodes
+
+def load_episodes(episodes_dir, context_frames):
+    """Load base (non-shifted) tokenized episodes with enough frames."""
+    import re
+    shift_re = re.compile(r"_s[+-]\d+_[+-]\d+$")
+    episodes = []
+    for ep in sorted(Path(episodes_dir).glob("*")):
+        if shift_re.search(ep.name):
+            continue
+        tp = ep / "tokens.npy"
+        ap = ep / "actions.npy"
+        if not tp.exists() or not ap.exists():
+            continue
+        tokens = np.load(tp).astype(np.int64)
+        actions = np.load(ap).astype(np.int64)
+        if len(tokens) >= context_frames + 1:
+            episodes.append((tokens, actions))
+    return episodes
 
 
 def _unwrap(model):
