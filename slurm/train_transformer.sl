@@ -8,10 +8,11 @@
 #SBATCH --cpus-per-gpu 8
 #SBATCH --mem 64G
 #SBATCH --time=08:00:00
+#SBATCH --signal=B:USR1@300
 
 # Train Transformer world model on A100.
-# Step 1: tokenize episodes with frozen FSQ-VAE
-# Step 2: train transformer on tokenized data
+# Auto-resumes: SLURM sends USR1 5 min before time limit,
+# the trap saves checkpoint and resubmits the job.
 #
 # Prerequisites (run once on login node):
 #   module load aidl/pytorch/2.6.0-cuda12.6
@@ -20,9 +21,20 @@
 # Submit:  sbatch slurm/train_transformer.sl
 # Monitor: tail -f slurm/logs/train_transformer.out
 
+# Trap USR1: kill training (triggers checkpoint save), resubmit
+handle_timeout() {
+    echo "=== USR1 received ($(date)), saving and resubmitting ==="
+    kill -TERM "$TRAIN_PID" 2>/dev/null
+    wait "$TRAIN_PID"
+    scontrol requeue "$SLURM_JOB_ID" || sbatch "$0"
+    exit 0
+}
+trap handle_timeout USR1
+
 module purge
 module load aidl/pytorch/2.6.0-cuda12.6
 
+# Tokenization is idempotent (skips already-tokenized episodes)
 echo "=== Step 1a: Tokenize death episodes (with shift augmentation) ==="
 python -u scripts/tokenize_episodes.py \
     --model fsq \
@@ -41,13 +53,13 @@ python -u scripts/tokenize_episodes.py \
     --batch-size 512 \
     --levels 8 5 5 5
 
-echo "=== Step 2: Train Transformer ==="
+echo "=== Step 2: Train Transformer ($(date)) ==="
 python -u scripts/train_transformer.py \
     --episodes-dir data/death_episodes \
     --expert-episodes-dir data/expert_episodes \
-    --epochs 200 \
+    --epochs 400 \
     --batch-size 512 \
-    --lr 1e-3 \
+    --lr 2e-3 \
     --context-frames 4 \
     --vocab-size 1000 \
     --tokens-per-frame 64 \
@@ -66,4 +78,8 @@ python -u scripts/train_transformer.py \
     --steps-per-epoch 500 \
     --checkpoint-dir checkpoints \
     --patience 30 \
-    --seed 42
+    --seed 42 \
+    --resume &
+
+TRAIN_PID=$!
+wait "$TRAIN_PID"

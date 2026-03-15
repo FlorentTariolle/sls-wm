@@ -10,6 +10,7 @@ import argparse
 import csv
 import os
 import re
+import signal
 import sys
 import time
 from pathlib import Path
@@ -366,6 +367,11 @@ def main():
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
 
+    # Handle SIGTERM (from SLURM timeout) gracefully
+    def _sigterm_handler(sig, frame):
+        raise KeyboardInterrupt()
+    signal.signal(signal.SIGTERM, _sigterm_handler)
+
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
@@ -655,7 +661,7 @@ def main():
             if epoch % 2 == 0 and device.type == "cuda":
                 torch.cuda.empty_cache()
 
-    except KeyboardInterrupt:
+    except (KeyboardInterrupt, SystemExit):
         print("\nInterrupted — saving checkpoint...")
         torch.save({
             "epoch": epoch,
