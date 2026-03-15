@@ -21,11 +21,15 @@
 # Submit:  sbatch slurm/train_transformer.sl
 # Monitor: tail -f slurm/logs/train_transformer.out
 
-# Trap USR1: kill training (triggers checkpoint save), resubmit
+# Auto-resume: the trap creates a sentinel file before requeuing.
+# On next run, if the sentinel exists, we pass --resume.
+RESUME_FLAG=checkpoints/.resume_transformer
+
 handle_timeout() {
     echo "=== USR1 received ($(date)), saving and resubmitting ==="
     kill -TERM "$TRAIN_PID" 2>/dev/null
     wait "$TRAIN_PID"
+    touch "$RESUME_FLAG"
     scontrol requeue "$SLURM_JOB_ID" || sbatch "$0"
     exit 0
 }
@@ -55,6 +59,13 @@ python -u scripts/tokenize_episodes.py \
     --shifts -4 -2 0 2 4 \
     --shifts-v -3 0 3
 
+RESUME_ARG=""
+if [ -f "$RESUME_FLAG" ]; then
+    RESUME_ARG="--resume"
+    rm "$RESUME_FLAG"
+    echo "=== Resuming from checkpoint ==="
+fi
+
 echo "=== Step 2: Train Transformer ($(date)) ==="
 python -u scripts/train_transformer.py \
     --episodes-dir data/death_episodes \
@@ -81,7 +92,7 @@ python -u scripts/train_transformer.py \
     --checkpoint-dir checkpoints \
     --patience 30 \
     --seed 42 \
-    --resume &
+    $RESUME_ARG &
 
 TRAIN_PID=$!
 wait "$TRAIN_PID"

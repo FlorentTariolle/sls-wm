@@ -371,7 +371,9 @@ def main():
     parser.add_argument("--n-heads", type=int, default=8)
     parser.add_argument("--n-layers", type=int, default=8)
     parser.add_argument("--dropout", type=float, default=0.1)
-    # Output
+    # Output / initialization
+    parser.add_argument("--pretrained", type=str, default=None,
+                        help="Path to BC-pretrained controller checkpoint")
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--n-eval-episodes", type=int, default=512)
     parser.add_argument("--eval-interval", type=int, default=10)
@@ -423,6 +425,11 @@ def main():
         token_embed_dim=args.token_embed_dim,
         h_dim=args.embed_dim,
     ).to(device)
+    if args.pretrained:
+        state = torch.load(args.pretrained, map_location=device,
+                           weights_only=True)
+        controller.load_state_dict(state)
+        print(f"Loaded pretrained controller from {args.pretrained}")
     n_params = sum(p.numel() for p in controller.parameters())
     print(f"Controller: CNNPolicy embed={args.token_embed_dim} "
           f"({n_params:,} params, actor-critic)")
