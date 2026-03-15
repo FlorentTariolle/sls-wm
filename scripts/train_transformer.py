@@ -409,19 +409,25 @@ def main():
         all_episodes.extend(expert_eps)
         print(f"Expert episodes: {len(expert_eps)} episodes")
 
-    # Identify base (non-shifted) episodes for splitting
+    # Identify base (non-shifted) episodes for stratified train/val split
     shift_re = re.compile(r"_s[+-]\d+_[+-]\d+$")
-    base_episodes = sorted(set(
-        shift_re.sub("", ep.name) for ep in all_episodes))
+    base_death = sorted(set(
+        shift_re.sub("", ep.name) for ep in all_episodes if ep.name in death_episodes))
+    base_expert = sorted(set(
+        shift_re.sub("", ep.name) for ep in all_episodes if ep.name not in death_episodes))
     rng = np.random.default_rng(args.seed)
-    indices = rng.permutation(len(base_episodes))
-    val_count = max(1, int(len(base_episodes) * args.val_ratio))
-    val_episodes = {base_episodes[i] for i in indices[:val_count]}
+    death_idx = rng.permutation(len(base_death))
+    expert_idx = rng.permutation(len(base_expert))
+    val_death_count = max(1, int(len(base_death) * args.val_ratio))
+    val_expert_count = max(1, int(len(base_expert) * args.val_ratio))
+    val_episodes = ({base_death[i] for i in death_idx[:val_death_count]} |
+                    {base_expert[i] for i in expert_idx[:val_expert_count]})
+    base_episodes = base_death + base_expert
 
+    val_count = len(val_episodes)
     print(f"Total tokenized episodes: {len(all_episodes)} "
           f"({len(base_episodes)} base, {len(all_episodes) - len(base_episodes)} shifted)")
-    print(f"Val base episodes: {val_count}, Train base episodes: "
-          f"{len(base_episodes) - val_count}")
+    print(f"Val: {val_death_count} death + {val_expert_count} expert = {val_count} base episodes")
 
     K = args.context_frames
     TPF = args.tokens_per_frame
