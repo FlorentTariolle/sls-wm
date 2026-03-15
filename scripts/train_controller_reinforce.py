@@ -175,19 +175,23 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
 
 
 def compute_actor_critic_loss(log_probs, rewards, entropies, values,
-                              normalizer, gamma=0.99, lam=0.95,
-                              entropy_coeff=0.01, critic_coeff=0.5):
-    """Compute actor-critic loss with GAE and percentile normalization.
+                              normalizer, log_alpha, target_entropy,
+                              gamma=0.995, lam=0.95, critic_coeff=0.5):
+    """Compute actor-critic loss with GAE, percentile normalization,
+    and auto-tuned entropy (SAC-style).
 
     Returns:
-        loss: scalar
+        policy_loss: scalar (actor + critic + entropy, for policy optimizer)
+        alpha_loss: scalar (for alpha optimizer)
         mean_return: float
         mean_entropy: float
         mean_value: float
+        alpha: float
     """
     T = len(rewards)
     if T == 0:
-        return torch.tensor(0.0, requires_grad=True), 0.0, 0.0, 0.0
+        zero = torch.tensor(0.0, requires_grad=True)
+        return zero, zero, 0.0, 0.0, 0.0, 0.0
 
     rewards_t = torch.stack(rewards)
     log_probs_t = torch.stack(log_probs)
@@ -219,13 +223,18 @@ def compute_actor_critic_loss(log_probs, rewards, entropies, values,
     # Critic loss
     critic_loss = ((values_t - returns) ** 2).sum(dim=0).mean()
 
-    # Entropy bonus
-    entropy_loss = -entropy_coeff * entropies_t.sum(dim=0).mean()
+    # Auto-tuned entropy
+    alpha = log_alpha.exp()
+    entropy_loss = -alpha.detach() * entropies_t.sum(dim=0).mean()
 
-    loss = actor_loss + critic_coeff * critic_loss + entropy_loss
+    policy_loss = actor_loss + critic_coeff * critic_loss + entropy_loss
 
-    return loss, returns.mean().item(), entropies_t.mean().item(), \
-        values_t.mean().item()
+    # Alpha loss: increase alpha if entropy < target, decrease if above
+    mean_entropy = entropies_t.mean()
+    alpha_loss = alpha * (mean_entropy.detach() - target_entropy)
+
+    return policy_loss, alpha_loss, returns.mean().item(), \
+        mean_entropy.item(), values_t.mean().item(), alpha.item()
 
 
 def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
@@ -278,7 +287,10 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.995)
     parser.add_argument("--lam", type=float, default=0.95,
                         help="GAE lambda")
-    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--target-entropy", type=float, default=0.35,
+                        help="Target entropy for auto-tuning (max=0.693 for binary)")
+    parser.add_argument("--alpha-lr", type=float, default=3e-4,
+                        help="Learning rate for entropy coefficient alpha")
     parser.add_argument("--critic-coeff", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--n-iterations", type=int, default=2000)
@@ -299,6 +311,7 @@ def main():
     parser.add_argument("--dropout", type=float, default=0.1)
     # Output
     parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument("--n-eval-episodes", type=int, default=512)
     parser.add_argument("--eval-interval", type=int, default=10)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
@@ -356,6 +369,10 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.n_iterations, eta_min=args.lr * 0.01)
 
+    # Auto-tuned entropy coefficient (SAC-style)
+    log_alpha = torch.zeros(1, requires_grad=True, device=device)
+    alpha_optimizer = torch.optim.Adam([log_alpha], lr=args.alpha_lr)
+
     normalizer = PercentileNormalizer()
 
     ckpt_dir = Path(args.checkpoint_dir)
@@ -364,22 +381,22 @@ def main():
     # Fixed eval contexts for consistent tracking across iterations
     print(f"\nPre-sampling fixed eval contexts...")
     fixed_eval_tokens, fixed_eval_actions = sample_contexts_uniform(
-        episodes, args.n_episodes, args.context_frames, rng)
-    print(f"  Eval: {args.n_episodes} fixed contexts")
+        episodes, args.n_eval_episodes, args.context_frames, rng)
+    print(f"  Eval: {args.n_eval_episodes} fixed contexts")
 
     log_path = ckpt_dir / "controller_reinforce_log.csv"
     log_file = open(log_path, "w", newline="")
     writer = csv.writer(log_file)
     writer.writerow(["iteration", "mean_survival", "mean_return",
-                     "loss", "mean_value", "entropy", "lr",
+                     "loss", "mean_value", "entropy", "alpha", "lr",
                      "eval_survival", "time_s"])
 
     best_eval = -float("inf")
 
     print(f"\nActor-Critic: lr={args.lr}, gamma={args.gamma}, "
           f"lam={args.lam}")
-    print(f"Coefficients: entropy={args.entropy_coeff}, "
-          f"critic={args.critic_coeff}")
+    print(f"Coefficients: critic={args.critic_coeff}, "
+          f"target_entropy={args.target_entropy} (auto-tuned)")
     print(f"Dream: n_episodes={args.n_episodes}, "
           f"max_steps={args.max_dream_steps}")
     print(f"Sampling: random train, fixed eval")
@@ -404,19 +421,25 @@ def main():
             print(f"Iter {iteration}: all died during warmup, skipping")
             continue
 
-        loss, mean_return, mean_entropy, mean_value = \
-            compute_actor_critic_loss(
+        policy_loss, alpha_loss, mean_return, mean_entropy, mean_value, \
+            alpha_val = compute_actor_critic_loss(
                 log_probs, rewards, entropies, values, normalizer,
+                log_alpha, args.target_entropy,
                 gamma=args.gamma, lam=args.lam,
-                entropy_coeff=args.entropy_coeff,
                 critic_coeff=args.critic_coeff)
 
+        # Update policy
         optimizer.zero_grad()
-        loss.backward()
+        policy_loss.backward()
         torch.nn.utils.clip_grad_norm_(controller.parameters(),
                                         args.max_grad_norm)
         optimizer.step()
         scheduler.step()
+
+        # Update entropy coefficient
+        alpha_optimizer.zero_grad()
+        alpha_loss.backward()
+        alpha_optimizer.step()
 
         elapsed = time.time() - t0
         mean_surv = survival.mean().item()
@@ -438,16 +461,17 @@ def main():
 
         writer.writerow([
             iteration, f"{mean_surv:.2f}", f"{mean_return:.4f}",
-            f"{loss.item():.4f}", f"{mean_value:.4f}",
-            f"{mean_entropy:.4f}", f"{lr:.1e}", eval_surv,
-            f"{elapsed:.1f}"])
+            f"{policy_loss.item():.4f}", f"{mean_value:.4f}",
+            f"{mean_entropy:.4f}", f"{alpha_val:.4f}", f"{lr:.1e}",
+            eval_surv, f"{elapsed:.1f}"])
         log_file.flush()
 
         eval_str = f" | eval={eval_surv}" if eval_surv else ""
         print(f"Iter {iteration:3d} | surv={mean_surv:5.1f} | "
               f"ret={mean_return:+.3f} | val={mean_value:+.3f} | "
-              f"loss={loss.item():.3f} | ent={mean_entropy:.3f} | "
-              f"lr={lr:.1e}{eval_str} | {elapsed:.1f}s")
+              f"loss={policy_loss.item():.3f} | ent={mean_entropy:.3f} | "
+              f"a={alpha_val:.3f} | lr={lr:.1e}{eval_str} | "
+              f"{elapsed:.1f}s")
 
     log_file.close()
     print(f"\nDone. Best eval survival: {best_eval:.1f}")

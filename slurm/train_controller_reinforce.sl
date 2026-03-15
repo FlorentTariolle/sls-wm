@@ -28,7 +28,8 @@ python -u scripts/train_controller_reinforce.py \
     --lr 1e-4 \
     --gamma 0.995 \
     --lam 0.95 \
-    --entropy-coeff 0.01 \
+    --target-entropy 0.35 \
+    --alpha-lr 3e-4 \
     --critic-coeff 0.5 \
     --max-dream-steps 30 \
     --death-threshold 0.5 \
