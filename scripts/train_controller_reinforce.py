@@ -75,10 +75,13 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         alive &= ~died
         survival += alive.float()
 
+        # Compute z_t: mean-pool token embeddings of predicted frame
+        with torch.no_grad():
+            z_t = m.token_embed(pred_tokens).mean(dim=1)  # (B, embed_dim)
+
         # Controller action (WITH gradients)
-        # Concatenate death_prob as extra feature so controller can see danger
         h_t_float = h_t.float()
-        ctrl_input = torch.cat([h_t_float, death_prob.detach().float().unsqueeze(1)], dim=1)
+        ctrl_input = torch.cat([h_t_float, z_t.float()], dim=1)
         action, log_prob, entropy = controller.act(ctrl_input)
 
         if step >= warmup_steps:
@@ -174,7 +177,9 @@ def evaluate_deterministic(model, controller, episodes, n_episodes,
         alive &= ~died
         survival += alive.float()
 
-        ctrl_input = torch.cat([h_t.float(), death_prob.float().unsqueeze(1)], dim=1)
+        with torch.no_grad():
+            z_t = m.token_embed(pred_tokens).mean(dim=1)
+        ctrl_input = torch.cat([h_t.float(), z_t.float()], dim=1)
         action = controller.act_deterministic(ctrl_input)
 
         new_status = torch.full((B, 1), m.ALIVE_TOKEN, dtype=torch.long, device=device)
@@ -256,12 +261,13 @@ def main():
         return
 
     # Create controller
+    # Input: h_t (embed_dim) + z_t (embed_dim, mean-pooled token embeddings)
     controller = PolicyController(
         hidden_dim=args.embed_dim, mlp_hidden=args.mlp_hidden,
-        extra_features=1).to(device)
+        extra_features=args.embed_dim).to(device)
     n_params = sum(p.numel() for p in controller.parameters())
-    print(f"Controller: MLP ({args.embed_dim}+1)→{args.mlp_hidden}→1 "
-          f"({n_params} params, +death_prob input)")
+    print(f"Controller: MLP ({args.embed_dim}+{args.embed_dim})"
+          f"→{args.mlp_hidden}→1 ({n_params} params, h_t+z_t input)")
 
     optimizer = torch.optim.Adam(controller.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
