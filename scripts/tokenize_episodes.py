@@ -149,13 +149,17 @@ def main():
                 aug_dir.mkdir(exist_ok=True)
                 np.save(aug_dir / "tokens.npy", tokens)
 
-                # Symlink actions.npy and frames.npy from original episode
-                actions_link = aug_dir / "actions.npy"
-                if not actions_link.exists():
-                    os.symlink((ep / "actions.npy").resolve(), actions_link)
-                frames_link = aug_dir / "frames.npy"
-                if not frames_link.exists():
-                    os.symlink((ep / "frames.npy").resolve(), frames_link)
+                # Link actions.npy and frames.npy from original episode
+                # (symlink on Linux, copy on Windows where symlinks need admin)
+                for fname in ("actions.npy", "frames.npy"):
+                    dst = aug_dir / fname
+                    if not dst.exists():
+                        src = (ep / fname).resolve()
+                        try:
+                            os.symlink(src, dst)
+                        except OSError:
+                            import shutil
+                            shutil.copy2(src, dst)
 
                 aug_created += 1
                 print(f"  {aug_name}: shift ({dx:+d},{dy:+d}) -> {tokens.shape} tokens")
