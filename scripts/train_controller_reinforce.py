@@ -21,7 +21,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.world_model import WorldModel
-from deepdash.controller import TransformerPolicy
+from deepdash.controller import CNNPolicy
 
 
 def load_episodes(episodes_dir, context_frames):
@@ -153,16 +153,15 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         alive &= ~died
         survival += alive.float()
 
-        with torch.no_grad():
-            tok_embeds = m.token_embed(pred_tokens).float()
-
+        # Pass raw token IDs (CNN has its own embedding)
         action, log_prob, entropy, value = controller.act(
-            tok_embeds, h_t.float())
+            pred_tokens, h_t.float())
 
         if step >= warmup_steps:
             alive_mask = alive.float().detach()
             all_log_probs.append(log_prob * alive_mask)
-            all_rewards.append(-death_prob.detach().float() * alive_mask)
+            # Survival reward: +1 per step alive (not -death_prob)
+            all_rewards.append(alive_mask)
             all_entropies.append(entropy * alive_mask)
             all_values.append(value * alive_mask)
 
@@ -257,9 +256,7 @@ def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
         alive &= ~died
         survival += alive.float()
 
-        with torch.no_grad():
-            tok_embeds = m.token_embed(pred_tokens).float()
-        action = controller.act_deterministic(tok_embeds, h_t.float())
+        action = controller.act_deterministic(pred_tokens, h_t.float())
 
         new_status = torch.full((B, 1), m.ALIVE_TOKEN, dtype=torch.long,
                                 device=device)
@@ -281,20 +278,18 @@ def main():
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lam", type=float, default=0.95,
                         help="GAE lambda")
-    parser.add_argument("--entropy-coeff", type=float, default=0.01)
+    parser.add_argument("--entropy-coeff", type=float, default=0.1)
     parser.add_argument("--critic-coeff", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--n-iterations", type=int, default=500)
     # Rollout
     parser.add_argument("--n-episodes", type=int, default=64)
-    parser.add_argument("--max-dream-steps", type=int, default=22)
+    parser.add_argument("--max-dream-steps", type=int, default=30)
     parser.add_argument("--death-threshold", type=float, default=0.5)
     parser.add_argument("--context-frames", type=int, default=4)
-    # Policy architecture
-    parser.add_argument("--policy-embed-dim", type=int, default=128)
-    parser.add_argument("--policy-n-heads", type=int, default=4)
-    parser.add_argument("--policy-n-layers", type=int, default=3)
-    parser.add_argument("--policy-dropout", type=float, default=0.1)
+    # Policy architecture (CNN)
+    parser.add_argument("--token-embed-dim", type=int, default=16,
+                        help="Per-token embedding dim for CNN input")
     # World model architecture (must match checkpoint)
     parser.add_argument("--vocab-size", type=int, default=1000)
     parser.add_argument("--tokens-per-frame", type=int, default=64)
@@ -346,18 +341,15 @@ def main():
         print("No tokenized episodes found.")
         return
 
-    # Create DART-style Transformer actor-critic policy
-    controller = TransformerPolicy(
-        wm_embed_dim=args.embed_dim,
-        n_tokens=args.tokens_per_frame,
-        embed_dim=args.policy_embed_dim,
-        n_heads=args.policy_n_heads,
-        n_layers=args.policy_n_layers,
-        dropout=args.policy_dropout,
+    # CNN actor-critic policy on 8x8 token grid
+    controller = CNNPolicy(
+        vocab_size=args.vocab_size,
+        grid_size=int(args.tokens_per_frame ** 0.5),
+        token_embed_dim=args.token_embed_dim,
+        h_dim=args.embed_dim,
     ).to(device)
     n_params = sum(p.numel() for p in controller.parameters())
-    print(f"Controller: TransformerPolicy {args.policy_n_layers}L/"
-          f"{args.policy_n_heads}H/{args.policy_embed_dim}d "
+    print(f"Controller: CNNPolicy embed={args.token_embed_dim} "
           f"({n_params:,} params, actor-critic)")
 
     optimizer = torch.optim.Adam(controller.parameters(), lr=args.lr)

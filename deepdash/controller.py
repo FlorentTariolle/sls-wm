@@ -3,11 +3,13 @@
 CMA-ES Controller: numpy-based, for evolutionary optimization.
 PolicyController: nn.Module MLP, for Reinforce policy gradient training.
 TransformerPolicy: ViT encoder (DART-style), sees individual tokens with positions.
+CNNPolicy: CNN on 8x8 token grid (IRIS/DIAMOND-style), actor-critic.
 """
 
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 
 class Controller:
@@ -218,4 +220,103 @@ class TransformerPolicy(nn.Module):
     def act_deterministic(self, token_embeds, h_t):
         """Greedy action for evaluation."""
         prob, _ = self.forward(token_embeds, h_t)
+        return (prob > 0.5).long()
+
+
+class CNNPolicy(nn.Module):
+    """CNN actor-critic on 8x8 token grid (IRIS/DIAMOND-style).
+
+    Token IDs are embedded into a small learnable space, reshaped to an
+    8x8 feature map, processed by 2 conv layers with MaxPool, then
+    concatenated with h_t for actor/critic heads.
+
+    Architecture (following IRIS/DIAMOND pattern):
+        Embedding(vocab, embed_dim) -> (embed_dim, 8, 8)
+        Conv2d(embed_dim, 32, 3x3) + ReLU + MaxPool(2x2) -> (32, 4, 4)
+        Conv2d(32, 64, 3x3) + ReLU + MaxPool(2x2)        -> (64, 2, 2) = 256
+        concat h_t (256d) -> 512d
+        Actor: Linear(512, 1)   (zero-init)
+        Critic: Linear(512, 1)  (zero-init)
+    """
+
+    def __init__(self, vocab_size=1000, grid_size=8, token_embed_dim=16,
+                 h_dim=256):
+        super().__init__()
+        self.grid_size = grid_size
+
+        # Learnable token embedding (separate from world model's)
+        self.token_embed = nn.Embedding(vocab_size, token_embed_dim)
+
+        # CNN on (token_embed_dim, 8, 8)
+        self.conv1 = nn.Conv2d(token_embed_dim, 32, 3, stride=1, padding=1)
+        self.conv2 = nn.Conv2d(32, 64, 3, stride=1, padding=1)
+
+        # After 2x MaxPool(2): 8->4->2, so 64*2*2 = 256
+        cnn_out = 64 * (grid_size // 4) ** 2  # 256
+        head_input = cnn_out + h_dim  # 512
+
+        # Actor-critic heads (zero-init like IRIS/DIAMOND)
+        self.actor = nn.Linear(head_input, 1)
+        self.critic = nn.Linear(head_input, 1)
+        nn.init.zeros_(self.actor.weight)
+        nn.init.zeros_(self.actor.bias)
+        nn.init.zeros_(self.critic.weight)
+        nn.init.zeros_(self.critic.bias)
+
+    def _encode(self, token_ids, h_t):
+        """Encode token grid + h_t into shared representation.
+
+        Args:
+            token_ids: (B, 64) long, FSQ token IDs.
+            h_t: (B, h_dim) float, world model hidden state.
+        Returns:
+            features: (B, 512)
+        """
+        B = token_ids.shape[0]
+        G = self.grid_size
+
+        # Embed tokens and reshape to spatial grid
+        x = self.token_embed(token_ids)          # (B, 64, embed_dim)
+        x = x.permute(0, 2, 1).reshape(B, -1, G, G)  # (B, embed_dim, 8, 8)
+
+        # CNN
+        x = F.relu(F.max_pool2d(self.conv1(x), 2))    # (B, 32, 4, 4)
+        x = F.relu(F.max_pool2d(self.conv2(x), 2))    # (B, 64, 2, 2)
+        x = x.flatten(1)                               # (B, 256)
+
+        # Concat with temporal context
+        return torch.cat([x, h_t], dim=1)               # (B, 512)
+
+    def forward(self, token_ids, h_t):
+        """Jump probability and value estimate.
+
+        Args:
+            token_ids: (B, 64) long.
+            h_t: (B, h_dim) float.
+        Returns:
+            prob: (B,) jump probability
+            value: (B,) state value estimate
+        """
+        features = self._encode(token_ids, h_t)
+        prob = self.actor(features).squeeze(-1).sigmoid()
+        value = self.critic(features).squeeze(-1)
+        return prob, value
+
+    def act(self, token_ids, h_t):
+        """Sample action from Bernoulli policy.
+
+        Returns:
+            action: (B,) long {0=idle, 1=jump}
+            log_prob: (B,)
+            entropy: (B,)
+            value: (B,)
+        """
+        prob, value = self.forward(token_ids, h_t)
+        dist = torch.distributions.Bernoulli(probs=prob)
+        action = dist.sample()
+        return action.long(), dist.log_prob(action), dist.entropy(), value
+
+    def act_deterministic(self, token_ids, h_t):
+        """Greedy action for evaluation."""
+        prob, _ = self.forward(token_ids, h_t)
         return (prob > 0.5).long()
