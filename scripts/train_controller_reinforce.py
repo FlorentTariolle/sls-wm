@@ -76,8 +76,10 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         survival += alive.float()
 
         # Controller action (WITH gradients)
+        # Concatenate death_prob as extra feature so controller can see danger
         h_t_float = h_t.float()
-        action, log_prob, entropy = controller.act(h_t_float)
+        ctrl_input = torch.cat([h_t_float, death_prob.detach().float().unsqueeze(1)], dim=1)
+        action, log_prob, entropy = controller.act(ctrl_input)
 
         if step >= warmup_steps:
             alive_mask = alive.float().detach()
@@ -172,7 +174,8 @@ def evaluate_deterministic(model, controller, episodes, n_episodes,
         alive &= ~died
         survival += alive.float()
 
-        action = controller.act_deterministic(h_t.float())
+        ctrl_input = torch.cat([h_t.float(), death_prob.float().unsqueeze(1)], dim=1)
+        action = controller.act_deterministic(ctrl_input)
 
         new_status = torch.full((B, 1), m.ALIVE_TOKEN, dtype=torch.long, device=device)
         new_frame = torch.cat([pred_tokens, new_status], dim=1).unsqueeze(1)
@@ -254,10 +257,11 @@ def main():
 
     # Create controller
     controller = PolicyController(
-        hidden_dim=args.embed_dim, mlp_hidden=args.mlp_hidden).to(device)
+        hidden_dim=args.embed_dim, mlp_hidden=args.mlp_hidden,
+        extra_features=1).to(device)
     n_params = sum(p.numel() for p in controller.parameters())
-    print(f"Controller: MLP {args.embed_dim}→{args.mlp_hidden}→1 "
-          f"({n_params} params)")
+    print(f"Controller: MLP ({args.embed_dim}+1)→{args.mlp_hidden}→1 "
+          f"({n_params} params, +death_prob input)")
 
     optimizer = torch.optim.Adam(controller.parameters(), lr=args.lr)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(

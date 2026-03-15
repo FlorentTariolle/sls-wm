@@ -78,11 +78,12 @@ class PolicyController(nn.Module):
     Stochastic action sampling for training, deterministic for evaluation.
     """
 
-    def __init__(self, hidden_dim=256, mlp_hidden=64):
+    def __init__(self, hidden_dim=256, mlp_hidden=64, extra_features=0):
         super().__init__()
+        input_dim = hidden_dim + extra_features
         self.net = nn.Sequential(
-            nn.LayerNorm(hidden_dim),
-            nn.Linear(hidden_dim, mlp_hidden),
+            nn.LayerNorm(input_dim),
+            nn.Linear(input_dim, mlp_hidden),
             nn.ReLU(),
             nn.Linear(mlp_hidden, 1),
         )
