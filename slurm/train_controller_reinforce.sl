@@ -8,6 +8,7 @@
 #SBATCH --cpus-per-gpu 8
 #SBATCH --mem 64G
 #SBATCH --time=08:00:00
+#SBATCH --exclude=c23hpda2
 
 # Train controller via actor-critic Reinforce in dream rollouts.
 # CNN policy on 8x8 token grid, survival reward, high exploration.
