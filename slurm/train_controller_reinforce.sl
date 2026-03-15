@@ -11,7 +11,7 @@
 #SBATCH --exclude=c23hpda2
 
 # Train controller via PPO in dream rollouts.
-# CNN policy, survival reward, clipped objective, auto entropy.
+# CNN policy, survival reward, near-obstacle sampling, 512 episodes.
 #
 # Submit:  sbatch slurm/train_controller_reinforce.sl
 # Monitor: tail -f slurm/logs/train_controller_reinforce.out
@@ -24,18 +24,18 @@ python -u scripts/train_controller_reinforce.py \
     --transformer-checkpoint checkpoints/transformer_best.pt \
     --episodes-dir data/episodes \
     --n-iterations 2000 \
-    --n-episodes 64 \
+    --n-episodes 512 \
     --lr 1e-4 \
     --gamma 0.995 \
     --lam 0.95 \
     --clip-eps 0.2 \
     --ppo-epochs 4 \
     --minibatch-size 512 \
-    --target-entropy 0.35 \
-    --alpha-lr 3e-4 \
+    --entropy-coeff 0.01 \
     --critic-coeff 0.5 \
     --max-grad-norm 0.5 \
     --max-dream-steps 30 \
+    --max-frames-to-death 25 \
     --death-threshold 0.5 \
     --token-embed-dim 16 \
     --context-frames 4 \

@@ -67,6 +67,37 @@ def sample_contexts_uniform(episodes, n, context_frames, rng):
     return np.array(all_ctx_tokens), np.array(all_ctx_actions)
 
 
+def sample_contexts_near_obstacle(episodes, n, context_frames, rng,
+                                  max_frames_to_death=25):
+    """Sample contexts where death occurs within max_frames_to_death.
+
+    Every episode ends with death at frame T-1. Context is placed so
+    the obstacle/death event falls within the dream horizon, giving the
+    controller both safe approach frames and the critical timing window.
+
+    Args:
+        max_frames_to_death: death must be at most this many frames after
+            context start. E.g. 25 means context starts at T-25 to T-K.
+    """
+    K = context_frames
+    all_ctx_tokens = []
+    all_ctx_actions = []
+    for _ in range(n):
+        ep_idx = rng.integers(len(episodes))
+        tokens, actions = episodes[ep_idx]
+        T = len(tokens)
+        # start in [T - max_frames_to_death, T - K]
+        earliest = max(0, T - max_frames_to_death)
+        latest = max(0, T - K)
+        if latest <= earliest:
+            start = earliest
+        else:
+            start = rng.integers(earliest, latest + 1)
+        all_ctx_tokens.append(tokens[start:start + K])
+        all_ctx_actions.append(actions[start:start + K])
+    return np.array(all_ctx_tokens), np.array(all_ctx_actions)
+
+
 def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
                   max_steps, death_threshold, device, warmup_steps):
     """Roll out dreams and cache data for PPO updates.
@@ -176,34 +207,32 @@ def compute_gae(rewards, values, gamma, lam):
 
 
 def ppo_update(controller, optimizer, rollout, advantages, returns,
-               log_alpha, alpha_optimizer, target_entropy,
-               clip_eps=0.2, critic_coeff=0.5, max_grad_norm=0.5,
-               n_epochs=4, minibatch_size=None):
+               clip_eps=0.2, entropy_coeff=0.01, critic_coeff=0.5,
+               max_grad_norm=0.5, n_epochs=4, minibatch_size=None):
     """PPO clipped objective with multiple epochs on cached rollout data.
 
     Returns:
-        mean_loss, mean_entropy, mean_value, alpha_val
+        mean_loss, mean_entropy, mean_value
     """
     T, B = rollout['rewards'].shape
-    N = T * B  # total transitions
+    N = T * B
 
     if minibatch_size is None:
-        minibatch_size = N  # full batch if not specified
+        minibatch_size = N
 
     # Flatten rollout for minibatch sampling
-    token_ids_flat = rollout['token_ids'].reshape(N, -1)     # (N, 64)
-    h_t_flat = rollout['h_t'].reshape(N, -1)                 # (N, 256)
-    actions_flat = rollout['actions'].reshape(N)              # (N,)
-    old_log_probs_flat = rollout['old_log_probs'].reshape(N)  # (N,)
-    advantages_flat = advantages.reshape(N)                   # (N,)
-    returns_flat = returns.reshape(N)                         # (N,)
-    alive_flat = rollout['alive_masks'].reshape(N)            # (N,)
+    token_ids_flat = rollout['token_ids'].reshape(N, -1)
+    h_t_flat = rollout['h_t'].reshape(N, -1)
+    actions_flat = rollout['actions'].reshape(N)
+    old_log_probs_flat = rollout['old_log_probs'].reshape(N)
+    advantages_flat = advantages.reshape(N)
+    returns_flat = returns.reshape(N)
+    alive_flat = rollout['alive_masks'].reshape(N)
 
     # Only train on alive transitions
     alive_idx = alive_flat.nonzero(as_tuple=True)[0]
     if len(alive_idx) == 0:
-        zero = torch.tensor(0.0)
-        return 0.0, 0.0, 0.0, log_alpha.exp().item()
+        return 0.0, 0.0, 0.0
 
     total_loss = 0.0
     total_entropy = 0.0
@@ -211,7 +240,6 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     n_updates = 0
 
     for epoch in range(n_epochs):
-        # Shuffle alive indices
         perm = alive_idx[torch.randperm(len(alive_idx), device=alive_idx.device)]
 
         for start in range(0, len(perm), minibatch_size):
@@ -230,6 +258,7 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
 
             # Forward pass with current policy
             prob, value = controller(mb_token_ids, mb_h_t)
+            prob = prob.clamp(1e-6, 1 - 1e-6)  # prevent NaN
             dist = torch.distributions.Bernoulli(probs=prob)
             new_log_prob = dist.log_prob(mb_actions.float())
             entropy = dist.entropy()
@@ -243,9 +272,8 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             # Critic loss
             critic_loss = F.mse_loss(value, mb_returns)
 
-            # Entropy bonus (auto-tuned)
-            alpha = log_alpha.exp()
-            entropy_loss = -alpha.detach() * entropy.mean()
+            # Fixed entropy bonus
+            entropy_loss = -entropy_coeff * entropy.mean()
 
             loss = actor_loss + critic_coeff * critic_loss + entropy_loss
 
@@ -255,12 +283,6 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
                                             max_grad_norm)
             optimizer.step()
 
-            # Update alpha
-            alpha_loss = alpha * (entropy.mean().detach() - target_entropy)
-            alpha_optimizer.zero_grad()
-            alpha_loss.backward()
-            alpha_optimizer.step()
-
             total_loss += loss.item()
             total_entropy += entropy.mean().item()
             total_value += value.mean().item()
@@ -268,7 +290,7 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
 
     n_updates = max(n_updates, 1)
     return total_loss / n_updates, total_entropy / n_updates, \
-        total_value / n_updates, log_alpha.exp().item()
+        total_value / n_updates
 
 
 def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
@@ -329,13 +351,14 @@ def main():
     parser.add_argument("--clip-eps", type=float, default=0.2)
     parser.add_argument("--ppo-epochs", type=int, default=4)
     parser.add_argument("--minibatch-size", type=int, default=512)
-    parser.add_argument("--target-entropy", type=float, default=0.35)
-    parser.add_argument("--alpha-lr", type=float, default=3e-4)
+    parser.add_argument("--entropy-coeff", type=float, default=0.01)
     parser.add_argument("--critic-coeff", type=float, default=0.5)
     parser.add_argument("--max-grad-norm", type=float, default=0.5)
     parser.add_argument("--n-iterations", type=int, default=2000)
     # Rollout
-    parser.add_argument("--n-episodes", type=int, default=64)
+    parser.add_argument("--n-episodes", type=int, default=512)
+    parser.add_argument("--max-frames-to-death", type=int, default=25,
+                        help="Max frames between context start and death")
     parser.add_argument("--max-dream-steps", type=int, default=30)
     parser.add_argument("--death-threshold", type=float, default=0.5)
     parser.add_argument("--context-frames", type=int, default=4)
@@ -409,24 +432,21 @@ def main():
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.n_iterations, eta_min=args.lr * 0.01)
 
-    # Auto-tuned entropy coefficient (SAC-style)
-    log_alpha = torch.zeros(1, requires_grad=True, device=device)
-    alpha_optimizer = torch.optim.Adam([log_alpha], lr=args.alpha_lr)
-
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    # Fixed eval contexts
+    # Fixed eval contexts (near-obstacle, same as training distribution)
     print(f"\nPre-sampling fixed eval contexts...")
-    fixed_eval_tokens, fixed_eval_actions = sample_contexts_uniform(
-        episodes, args.n_eval_episodes, args.context_frames, rng)
-    print(f"  Eval: {args.n_eval_episodes} fixed contexts")
+    fixed_eval_tokens, fixed_eval_actions = sample_contexts_near_obstacle(
+        episodes, args.n_eval_episodes, args.context_frames, rng,
+        max_frames_to_death=args.max_frames_to_death)
+    print(f"  Eval: {args.n_eval_episodes} fixed near-obstacle contexts")
 
     log_path = ckpt_dir / "controller_reinforce_log.csv"
     log_file = open(log_path, "w", newline="")
     writer = csv.writer(log_file)
     writer.writerow(["iteration", "mean_survival", "mean_return",
-                     "loss", "mean_value", "entropy", "alpha", "lr",
+                     "loss", "mean_value", "entropy", "lr",
                      "eval_survival", "jump_ratio", "time_s"])
 
     best_eval = -float("inf")
@@ -434,17 +454,19 @@ def main():
     print(f"\nPPO: lr={args.lr}, gamma={args.gamma}, lam={args.lam}")
     print(f"PPO: clip_eps={args.clip_eps}, epochs={args.ppo_epochs}, "
           f"minibatch={args.minibatch_size}")
-    print(f"Entropy: target={args.target_entropy} (auto-tuned)")
+    print(f"Entropy: {args.entropy_coeff} (fixed)")
     print(f"Dream: n_episodes={args.n_episodes}, "
           f"max_steps={args.max_dream_steps}")
-    print(f"Sampling: random train, fixed eval ({args.n_eval_episodes})\n")
+    print(f"Sampling: near-obstacle (max {args.max_frames_to_death}f to death)")
+    print(f"Eval: {args.n_eval_episodes} fixed contexts\n")
 
     for iteration in range(1, args.n_iterations + 1):
         t0 = time.time()
 
-        # Random training contexts
-        ctx_tokens, ctx_actions = sample_contexts_uniform(
-            episodes, args.n_episodes, args.context_frames, rng)
+        # Near-obstacle training contexts
+        ctx_tokens, ctx_actions = sample_contexts_near_obstacle(
+            episodes, args.n_episodes, args.context_frames, rng,
+            max_frames_to_death=args.max_frames_to_death)
 
         # Dream rollout (no gradients, cache data)
         controller.eval()
@@ -467,10 +489,10 @@ def main():
 
         # PPO update (4 epochs on cached data)
         controller.train()
-        mean_loss, mean_entropy, mean_value, alpha_val = ppo_update(
+        mean_loss, mean_entropy, mean_value = ppo_update(
             controller, optimizer, rollout, advantages, returns,
-            log_alpha, alpha_optimizer, args.target_entropy,
-            clip_eps=args.clip_eps, critic_coeff=args.critic_coeff,
+            clip_eps=args.clip_eps, entropy_coeff=args.entropy_coeff,
+            critic_coeff=args.critic_coeff,
             max_grad_norm=args.max_grad_norm,
             n_epochs=args.ppo_epochs,
             minibatch_size=args.minibatch_size)
@@ -502,7 +524,7 @@ def main():
         writer.writerow([
             iteration, f"{mean_surv:.2f}", f"{mean_return:.4f}",
             f"{mean_loss:.4f}", f"{mean_value:.4f}",
-            f"{mean_entropy:.4f}", f"{alpha_val:.4f}", f"{lr:.1e}",
+            f"{mean_entropy:.4f}", f"{lr:.1e}",
             eval_surv, jump_ratio_str, f"{elapsed:.1f}"])
         log_file.flush()
 
@@ -511,8 +533,7 @@ def main():
         print(f"Iter {iteration:3d} | surv={mean_surv:5.1f} | "
               f"ret={mean_return:+.3f} | val={mean_value:+.3f} | "
               f"loss={mean_loss:.3f} | ent={mean_entropy:.3f} | "
-              f"a={alpha_val:.3f} | lr={lr:.1e}{eval_str} | "
-              f"{elapsed:.1f}s")
+              f"lr={lr:.1e}{eval_str} | {elapsed:.1f}s")
 
     log_file.close()
     print(f"\nDone. Best eval survival: {best_eval:.1f}")
