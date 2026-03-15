@@ -31,13 +31,13 @@ python -u scripts/train_controller_reinforce.py \
     --transformer-checkpoint checkpoints/transformer_best.pt \
     --episodes-dir data/episodes \
     --n-iterations 500 \
-    --n-episodes 128 \
-    --lr 1e-4 \
+    --n-episodes 64 \
+    --lr 3e-4 \
     --gamma 0.99 \
     --lam 0.95 \
     --entropy-coeff 0.01 \
     --critic-coeff 0.5 \
-    --max-dream-steps 22 \
+    --max-dream-steps 20 \
     --death-threshold 0.5 \
     --policy-embed-dim 128 \
     --policy-n-heads 4 \

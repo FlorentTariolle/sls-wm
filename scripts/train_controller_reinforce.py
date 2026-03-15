@@ -212,19 +212,16 @@ def compute_actor_critic_loss(log_probs, rewards, entropies, values,
         values_t.mean().item()
 
 
-def evaluate_deterministic(model, controller, episodes, n_episodes,
-                           context_frames, max_steps, death_threshold,
-                           device, rng):
-    """Run deterministic evaluation with uniform sampling."""
+def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
+                    max_steps, death_threshold, device):
+    """Run deterministic evaluation on fixed pre-sampled contexts."""
     m = _unwrap(model)
-    ctx_tokens, ctx_actions = sample_contexts_uniform(
-        episodes, n_episodes, context_frames, rng)
+    B = ctx_tokens_np.shape[0]
 
-    B = n_episodes
-    status = np.full((*ctx_tokens.shape[:2], 1), m.ALIVE_TOKEN, dtype=np.int64)
-    ctx_with_status = np.concatenate([ctx_tokens, status], axis=2)
+    status = np.full((*ctx_tokens_np.shape[:2], 1), m.ALIVE_TOKEN, dtype=np.int64)
+    ctx_with_status = np.concatenate([ctx_tokens_np, status], axis=2)
     ctx_t = torch.from_numpy(ctx_with_status).to(device)
-    ctx_a = torch.from_numpy(ctx_actions).to(device)
+    ctx_a = torch.from_numpy(ctx_actions_np).to(device)
 
     alive = torch.ones(B, dtype=torch.bool, device=device)
     survival = torch.zeros(B, dtype=torch.float32, device=device)
@@ -263,7 +260,7 @@ def main():
                         default="checkpoints/transformer_best.pt")
     parser.add_argument("--episodes-dir", default="data/episodes")
     # Actor-critic
-    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--lr", type=float, default=3e-4)
     parser.add_argument("--gamma", type=float, default=0.99)
     parser.add_argument("--lam", type=float, default=0.95,
                         help="GAE lambda")
@@ -272,7 +269,7 @@ def main():
     parser.add_argument("--max-grad-norm", type=float, default=1.0)
     parser.add_argument("--n-iterations", type=int, default=500)
     # Rollout
-    parser.add_argument("--n-episodes", type=int, default=128)
+    parser.add_argument("--n-episodes", type=int, default=64)
     parser.add_argument("--max-dream-steps", type=int, default=22)
     parser.add_argument("--death-threshold", type=float, default=0.5)
     parser.add_argument("--context-frames", type=int, default=4)
@@ -355,6 +352,16 @@ def main():
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
+    # Pre-sample fixed contexts for deterministic training and eval
+    # If controller can't overfit these, the dream signal doesn't exist
+    print(f"\nPre-sampling fixed contexts...")
+    fixed_train_tokens, fixed_train_actions = sample_contexts_uniform(
+        episodes, args.n_episodes, args.context_frames, rng)
+    fixed_eval_tokens, fixed_eval_actions = sample_contexts_uniform(
+        episodes, args.n_episodes, args.context_frames, rng)
+    print(f"  Train: {args.n_episodes} fixed contexts")
+    print(f"  Eval:  {args.n_episodes} fixed contexts")
+
     log_path = ckpt_dir / "controller_reinforce_log.csv"
     log_file = open(log_path, "w", newline="")
     writer = csv.writer(log_file)
@@ -370,15 +377,14 @@ def main():
           f"critic={args.critic_coeff}")
     print(f"Dream: n_episodes={args.n_episodes}, "
           f"max_steps={args.max_dream_steps}")
-    print(f"Sampling: uniform (not near-death)")
+    print(f"Sampling: FIXED contexts (overfit diagnostic)")
     print(f"Normalization: percentile (5th/95th EMA)\n")
 
     for iteration in range(1, args.n_iterations + 1):
         t0 = time.time()
 
-        # Uniform context sampling
-        ctx_tokens, ctx_actions = sample_contexts_uniform(
-            episodes, args.n_episodes, args.context_frames, rng)
+        # Use fixed training contexts every iteration
+        ctx_tokens, ctx_actions = fixed_train_tokens, fixed_train_actions
 
         controller.train()
         log_probs, rewards, entropies, values, survival = dream_rollout(
@@ -414,10 +420,9 @@ def main():
         if iteration % args.eval_interval == 0:
             controller.eval()
             with torch.no_grad():
-                es = evaluate_deterministic(
-                    model, controller, episodes, args.n_episodes,
-                    args.context_frames, args.max_dream_steps,
-                    args.death_threshold, device, rng)
+                es = evaluate_fixed(
+                    model, controller, fixed_eval_tokens, fixed_eval_actions,
+                    args.max_dream_steps, args.death_threshold, device)
             eval_surv = f"{es:.2f}"
 
             if es > best_eval:
