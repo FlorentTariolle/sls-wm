@@ -211,8 +211,8 @@ def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
     vocab = m.full_vocab_size
     vs = m.vocab_size
     total_loss, total_correct, total_tokens = 0, 0, 0
-    total_death_correct, total_death_samples = 0, 0
     total_cpc_loss = 0.0
+    death_tp, death_fp, death_fn = 0, 0, 0
 
     use_amp = device.type == "cuda"
 
@@ -267,13 +267,21 @@ def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
 
             status_target = target[:, tpf]
             status_pred = logits[:, tpf].argmax(dim=-1)
-            total_death_correct += (status_pred == status_target).sum().item()
-            total_death_samples += bs
+            is_death = status_target == m.DEATH_TOKEN
+            pred_death = status_pred == m.DEATH_TOKEN
+            death_tp += (pred_death & is_death).sum().item()
+            death_fp += (pred_death & ~is_death).sum().item()
+            death_fn += (~pred_death & is_death).sum().item()
             total_cpc_loss += cpc_loss.item() * bs
 
-    return (total_loss / total_death_samples, total_correct / total_tokens,
-            total_death_correct / total_death_samples,
-            total_cpc_loss / total_death_samples)
+    n_train = death_tp + death_fp + death_fn + 1e-8
+    death_prec = death_tp / (death_tp + death_fp + 1e-8)
+    death_rec = death_tp / (death_tp + death_fn + 1e-8)
+    death_f1 = 2 * death_prec * death_rec / (death_prec + death_rec + 1e-8)
+    n_samples = total_tokens // tpf
+    return (total_loss / n_samples, total_correct / total_tokens,
+            death_prec, death_rec, death_f1,
+            total_cpc_loss / n_samples)
 
 
 @torch.no_grad()
@@ -283,8 +291,8 @@ def val_epoch(model, loader, device, label_smoothing=0.0, focal_gamma=2.0,
     m = _unwrap(model)
     tpf = m.tokens_per_frame
     total_loss, total_correct, total_tokens = 0, 0, 0
-    total_death_correct, total_death_samples = 0, 0
     total_cpc_loss = 0.0
+    death_tp, death_fp, death_fn = 0, 0, 0
 
     use_amp = device.type == "cuda"
 
@@ -297,7 +305,7 @@ def val_epoch(model, loader, device, label_smoothing=0.0, focal_gamma=2.0,
         with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
             logits, cpc_loss, mask = model(frame_tokens, actions, mask_ratio=1.0)
 
-        # All tokens masked → loss on all positions (same loss as training)
+        # All tokens masked -> loss on all positions (same loss as training)
         token_loss = focal_cross_entropy(
             logits[mask],
             target[mask],
@@ -317,12 +325,19 @@ def val_epoch(model, loader, device, label_smoothing=0.0, focal_gamma=2.0,
 
         status_target = target[:, tpf]
         status_pred = logits[:, tpf].argmax(dim=-1)
-        total_death_correct += (status_pred == status_target).sum().item()
-        total_death_samples += bs
+        is_death = status_target == m.DEATH_TOKEN
+        pred_death = status_pred == m.DEATH_TOKEN
+        death_tp += (pred_death & is_death).sum().item()
+        death_fp += (pred_death & ~is_death).sum().item()
+        death_fn += (~pred_death & is_death).sum().item()
 
-    return (total_loss / total_death_samples, total_correct / total_tokens,
-            total_death_correct / total_death_samples,
-            total_cpc_loss / total_death_samples)
+    death_prec = death_tp / (death_tp + death_fp + 1e-8)
+    death_rec = death_tp / (death_tp + death_fn + 1e-8)
+    death_f1 = 2 * death_prec * death_rec / (death_prec + death_rec + 1e-8)
+    n_samples = total_tokens // tpf
+    return (total_loss / n_samples, total_correct / total_tokens,
+            death_prec, death_rec, death_f1,
+            total_cpc_loss / n_samples)
 
 
 def main():
@@ -586,9 +601,11 @@ def main():
     log_writer = csv.writer(log_file)
     if not append:
         log_writer.writerow(["epoch", "train_total", "train_loss", "train_acc",
-                             "train_death_acc", "train_cpc",
+                             "train_death_prec", "train_death_rec", "train_death_f1",
+                             "train_cpc",
                              "val_total", "val_loss", "val_acc",
-                             "val_death_acc", "val_cpc",
+                             "val_death_prec", "val_death_rec", "val_death_f1",
+                             "val_cpc",
                              "gap", "lr", "time_s"])
 
     patience_counter = 0
@@ -597,7 +614,7 @@ def main():
     try:
         for epoch in range(start_epoch, args.epochs + 1):
             t0 = time.time()
-            train_loss, train_acc, train_death_acc, train_cpc = train_epoch(
+            train_loss, train_acc, train_d_prec, train_d_rec, train_d_f1, train_cpc = train_epoch(
                 model, train_loader, optimizer, scaler,
                 args.cpc_weight, device, token_noise=args.token_noise,
                 fsq_noise=args.fsq_noise,
@@ -605,7 +622,7 @@ def main():
                 label_smoothing=args.label_smoothing,
                 focal_gamma=args.focal_gamma,
                 soft_target_matrix=soft_target_matrix)
-            val_loss, val_acc, val_death_acc, val_cpc = val_epoch(
+            val_loss, val_acc, val_d_prec, val_d_rec, val_d_f1, val_cpc = val_epoch(
                 model, val_loader, device,
                 label_smoothing=args.label_smoothing,
                 focal_gamma=args.focal_gamma,
@@ -622,17 +639,21 @@ def main():
             print(
                 f"Epoch {epoch:3d}/{args.epochs} ({dt:.1f}s) | "
                 f"Train: total={train_total:.4f} loss={train_loss:.4f} acc={train_acc:.3f} "
-                f"death={train_death_acc:.3f} cpc={train_cpc:.3f} | "
+                f"death[P={train_d_prec:.3f} R={train_d_rec:.3f} F1={train_d_f1:.3f}] "
+                f"cpc={train_cpc:.3f} | "
                 f"Val: total={val_total:.4f} loss={val_loss:.4f} acc={val_acc:.3f} "
-                f"death={val_death_acc:.3f} cpc={val_cpc:.3f} | "
+                f"death[P={val_d_prec:.3f} R={val_d_rec:.3f} F1={val_d_f1:.3f}] "
+                f"cpc={val_cpc:.3f} | "
                 f"gap={gap:+.4f} | LR: {lr:.1e}"
             )
 
             log_writer.writerow([
                 epoch, f"{train_total:.6f}", f"{train_loss:.6f}", f"{train_acc:.4f}",
-                f"{train_death_acc:.4f}", f"{train_cpc:.4f}",
+                f"{train_d_prec:.4f}", f"{train_d_rec:.4f}", f"{train_d_f1:.4f}",
+                f"{train_cpc:.4f}",
                 f"{val_total:.6f}", f"{val_loss:.6f}", f"{val_acc:.4f}",
-                f"{val_death_acc:.4f}", f"{val_cpc:.4f}",
+                f"{val_d_prec:.4f}", f"{val_d_rec:.4f}", f"{val_d_f1:.4f}",
+                f"{val_cpc:.4f}",
                 f"{gap:.4f}", f"{lr:.1e}", f"{dt:.1f}"
             ])
             log_file.flush()
