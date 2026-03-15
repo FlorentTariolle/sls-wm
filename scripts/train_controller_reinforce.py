@@ -250,6 +250,8 @@ def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
 
     alive = torch.ones(B, dtype=torch.bool, device=device)
     survival = torch.zeros(B, dtype=torch.float32, device=device)
+    total_jumps = 0
+    total_actions = 0
     use_amp = device.type == "cuda"
 
     for step in range(max_steps):
@@ -266,6 +268,8 @@ def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
         survival += alive.float()
 
         action = controller.act_deterministic(pred_tokens, h_t.float())
+        total_jumps += (action[alive] == 1).sum().item()
+        total_actions += alive.sum().item()
 
         new_status = torch.full((B, 1), m.ALIVE_TOKEN, dtype=torch.long,
                                 device=device)
@@ -273,7 +277,8 @@ def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
         ctx_t = torch.cat([ctx_t[:, 1:], new_frame], dim=1)
         ctx_a = torch.cat([ctx_a[:, 1:], action.unsqueeze(1)], dim=1)
 
-    return survival.mean().item()
+    jump_ratio = total_jumps / max(total_actions, 1)
+    return survival.mean().item(), jump_ratio
 
 
 def main():
@@ -389,7 +394,7 @@ def main():
     writer = csv.writer(log_file)
     writer.writerow(["iteration", "mean_survival", "mean_return",
                      "loss", "mean_value", "entropy", "alpha", "lr",
-                     "eval_survival", "time_s"])
+                     "eval_survival", "jump_ratio", "time_s"])
 
     best_eval = -float("inf")
 
@@ -446,13 +451,15 @@ def main():
         lr = optimizer.param_groups[0]["lr"]
 
         eval_surv = ""
+        jump_ratio_str = ""
         if iteration % args.eval_interval == 0:
             controller.eval()
             with torch.no_grad():
-                es = evaluate_fixed(
+                es, jr = evaluate_fixed(
                     model, controller, fixed_eval_tokens, fixed_eval_actions,
                     args.max_dream_steps, args.death_threshold, device)
             eval_surv = f"{es:.2f}"
+            jump_ratio_str = f"{jr:.2f}"
 
             if es > best_eval:
                 best_eval = es
@@ -463,10 +470,11 @@ def main():
             iteration, f"{mean_surv:.2f}", f"{mean_return:.4f}",
             f"{policy_loss.item():.4f}", f"{mean_value:.4f}",
             f"{mean_entropy:.4f}", f"{alpha_val:.4f}", f"{lr:.1e}",
-            eval_surv, f"{elapsed:.1f}"])
+            eval_surv, jump_ratio_str, f"{elapsed:.1f}"])
         log_file.flush()
 
-        eval_str = f" | eval={eval_surv}" if eval_surv else ""
+        eval_str = f" | eval={eval_surv} jmp={jump_ratio_str}" \
+            if eval_surv else ""
         print(f"Iter {iteration:3d} | surv={mean_surv:5.1f} | "
               f"ret={mean_return:+.3f} | val={mean_value:+.3f} | "
               f"loss={policy_loss.item():.3f} | ent={mean_entropy:.3f} | "
