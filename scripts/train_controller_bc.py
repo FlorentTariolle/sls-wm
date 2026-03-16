@@ -29,8 +29,8 @@ def _unwrap(model):
     return model._orig_mod if hasattr(model, "_orig_mod") else model
 
 
-def load_expert_episodes(episodes_dir, context_frames):
-    """Load tokenized expert episodes with enough frames."""
+def load_episodes(episodes_dir, context_frames):
+    """Load tokenized episodes (base only, no shifts) with enough frames."""
     shift_re = re.compile(r"_s[+-]\d+_[+-]\d+$")
     K = context_frames
     episodes = []
@@ -43,17 +43,16 @@ def load_expert_episodes(episodes_dir, context_frames):
             continue
         tokens = np.load(tp).astype(np.int64)
         actions = np.load(ap).astype(np.int64)
-        if len(tokens) >= K + 1:
+        if len(tokens) >= K * 3:
             episodes.append((tokens, actions))
     return episodes
 
 
-def extract_bc_samples(episodes, context_frames):
+def extract_bc_samples(episodes, context_frames, trim_end=0):
     """Extract (context_tokens, context_actions, target_tokens, target_action) tuples.
 
-    For each frame i >= K in each episode:
-        context = frames[i-K:i], actions[i-K:i]
-        target  = tokens[i], actions[i]
+    Args:
+        trim_end: exclude last N frames per episode (e.g. 2*K for death episodes).
     """
     K = context_frames
     all_ctx_tokens = []
@@ -62,7 +61,7 @@ def extract_bc_samples(episodes, context_frames):
     all_target_actions = []
 
     for tokens, actions in episodes:
-        T = len(tokens)
+        T = len(tokens) - trim_end
         for i in range(K, T):
             all_ctx_tokens.append(tokens[i - K:i])
             all_ctx_actions.append(actions[i - K:i])
@@ -107,6 +106,7 @@ def compute_hidden_states(model, ctx_tokens, ctx_actions, device, batch_size=256
 def main():
     parser = argparse.ArgumentParser(
         description="Behavioral cloning for controller")
+    parser.add_argument("--episodes-dir", default="data/death_episodes")
     parser.add_argument("--expert-episodes-dir", default="data/expert_episodes")
     parser.add_argument("--transformer-checkpoint",
                         default="checkpoints/transformer_best.pt")
@@ -145,30 +145,55 @@ def main():
     wm.eval()
     print("World model loaded")
 
-    # Load expert episodes
-    episodes = load_expert_episodes(args.expert_episodes_dir,
-                                    args.context_frames)
-    print(f"Loaded {len(episodes)} expert episodes")
-    if not episodes:
-        print("No expert episodes found!")
+    # Load episodes (death + expert)
+    K = args.context_frames
+    death_eps = load_episodes(args.episodes_dir, K)
+    expert_eps = load_episodes(args.expert_episodes_dir, K)
+    print(f"Loaded {len(death_eps)} death + {len(expert_eps)} expert episodes")
+    if not death_eps and not expert_eps:
+        print("No episodes found!")
         return
 
-    # Extract BC samples
-    ctx_tokens, ctx_actions, target_tokens, target_actions = \
-        extract_bc_samples(episodes, args.context_frames)
+    # Extract BC samples: trim last 2*K frames from death episodes
+    # (outcome determined), trim last 2*K from expert (win animation)
+    death_ctx, death_act, death_tok, death_actions = \
+        extract_bc_samples(death_eps, K, trim_end=K * 2)
+    expert_ctx, expert_act, expert_tok, expert_actions = \
+        extract_bc_samples(expert_eps, K, trim_end=K * 2)
+
+    n_death = len(death_actions)
+    n_expert = len(expert_actions)
+    print(f"BC samples: {n_death} death + {n_expert} expert = {n_death + n_expert}")
+
+    # Stratified train/val split (10% of each source)
+    rng = np.random.default_rng(args.seed)
+    death_perm = rng.permutation(n_death)
+    expert_perm = rng.permutation(n_expert)
+    val_death = max(1, int(n_death * args.val_ratio))
+    val_expert = max(1, int(n_expert * args.val_ratio))
+
+    death_val_idx = death_perm[:val_death]
+    death_train_idx = death_perm[val_death:]
+    expert_val_idx = expert_perm[:val_expert] + n_death  # offset
+    expert_train_idx = expert_perm[val_expert:] + n_death
+
+    # Concatenate all samples
+    ctx_tokens = np.concatenate([death_ctx, expert_ctx])
+    ctx_actions = np.concatenate([death_act, expert_act])
+    target_tokens = np.concatenate([death_tok, expert_tok])
+    target_actions = np.concatenate([death_actions, expert_actions])
     N = len(target_actions)
-    print(f"Total BC samples: {N}")
+
+    train_idx = np.concatenate([death_train_idx, expert_train_idx])
+    val_idx = np.concatenate([death_val_idx, expert_val_idx])
+
     print(f"Action distribution: "
           f"{target_actions.sum()}/{N} jumps "
           f"({target_actions.mean() * 100:.1f}%)")
-
-    # Train/val split
-    rng = np.random.default_rng(args.seed)
-    indices = rng.permutation(N)
-    val_count = max(1, int(N * args.val_ratio))
-    val_idx = indices[:val_count]
-    train_idx = indices[val_count:]
-    print(f"Train: {len(train_idx)}, Val: {len(val_idx)}")
+    print(f"Train: {len(train_idx)} (death: {len(death_train_idx)}, "
+          f"expert: {len(expert_train_idx)})")
+    print(f"Val: {len(val_idx)} (death: {len(death_val_idx)}, "
+          f"expert: {len(expert_val_idx)})")
 
     # Precompute h_t for all samples (one-time cost)
     print("Computing hidden states from world model...")
