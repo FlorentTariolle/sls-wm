@@ -127,6 +127,8 @@ def main():
     parser.add_argument("--n-layers", type=int, default=8)
     parser.add_argument("--tokens-per-frame", type=int, default=64)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--decode-steps", type=int, default=1,
+                        help="Decoding steps (1 = parallel, >1 = iterative)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -174,19 +176,25 @@ def main():
 
     rng = np.random.default_rng()
 
-    def new_episode():
-        tokens, actions, name, split = loader.get_next()
+    # Current episode data (for replay)
+    current_ep = {}
+
+    def start_dream(tokens, actions, name, split, start=None):
+        """Set up a dream from episode data."""
         T = len(tokens)
         K = args.context_frames
-        if args.start_pos == "beginning":
-            start = 0
-        elif args.start_pos == "near-obstacle":
-            # Match controller sampling: death (T-1) is 1..25 dream steps after context
-            earliest = max(0, T - K - 25)
-            latest = max(0, T - K - 1)
-            start = rng.integers(earliest, latest + 1) if latest > earliest else earliest
-        else:
-            start = rng.integers(0, max(1, T - K - 10))
+        if start is None:
+            if args.start_pos == "beginning":
+                start = 0
+            elif args.start_pos == "near-obstacle":
+                earliest = max(0, T - K - 25)
+                latest = max(0, T - K - 1)
+                start = rng.integers(earliest, latest + 1) if latest > earliest else earliest
+            else:
+                start = rng.integers(0, max(1, T - K - 10))
+
+        current_ep.update(tokens=tokens, actions=actions,
+                          name=name, split=split, start=start)
 
         ctx_tok = tokens[start:start + K]
         ctx_act = actions[start:start + K]
@@ -196,19 +204,29 @@ def main():
         ct = torch.from_numpy(ctx_with_status[None]).to(device)
         ca = torch.from_numpy(ctx_act[None]).to(device)
 
-        # Decode last context frame for initial display
         last_frame = decode_tokens(vae, ctx_tok[-1], device)
 
         print(f"  Episode: {name} [{split}], start frame: {start}")
         return ct, ca, last_frame, 0, split
+
+    def new_episode():
+        tokens, actions, name, split = loader.get_next()
+        return start_dream(tokens, actions, name, split)
+
+    def replay_episode():
+        return start_dream(current_ep['tokens'], current_ep['actions'],
+                           current_ep['name'], current_ep['split'],
+                           current_ep['start'])
 
     ctx_t, ctx_a, frame_img, steps, ep_split = new_episode()
     dead = False
     death_prob_val = 0.0
     action = 0
     best_steps = 0
+    mgit_steps = args.decode_steps
 
-    print(f"\nControls: SPACE/UP=jump, R=restart, Q=quit")
+    print(f"\nControls: SPACE/UP=jump, R=retry, T=next episode, Q=quit")
+    print(f"LEFT/RIGHT = adjust decode steps (current: {mgit_steps})")
     print(f"FPS: {args.fps}\n")
 
     running = True
@@ -220,8 +238,18 @@ def main():
                 if event.key in (pygame.K_q, pygame.K_ESCAPE):
                     running = False
                 if event.key == pygame.K_r:
+                    ctx_t, ctx_a, frame_img, steps, ep_split = replay_episode()
+                    dead = False
+                    death_prob_val = 0.0
+                if event.key == pygame.K_t:
                     ctx_t, ctx_a, frame_img, steps, ep_split = new_episode()
                     dead = False
+                if event.key == pygame.K_RIGHT:
+                    mgit_steps = min(mgit_steps + 1, 16)
+                    print(f"  decode steps: {mgit_steps}")
+                if event.key == pygame.K_LEFT:
+                    mgit_steps = max(mgit_steps - 1, 1)
+                    print(f"  decode steps: {mgit_steps}")
                     death_prob_val = 0.0
 
         if not running:
@@ -233,25 +261,29 @@ def main():
         surf = pygame.transform.scale(surf, (W, H))
         screen.blit(surf, (0, 0))
 
-        # HUD
+        # HUD (two lines)
         act_str = "JUMP" if action else "idle"
         dp_color = (255, 80, 80) if death_prob_val > 0.3 else (80, 255, 80)
-        split_color = (255, 200, 50) if ep_split == "VAL" else (150, 150, 150)
-        hud = font.render(
-            f"step:{steps:3d}  {act_str:4s}  death:{death_prob_val:.2f}  "
-            f"best:{best_steps}  [{ep_split}]", True, dp_color)
-        # Dark background for readability
-        hud_bg = pygame.Surface((hud.get_width() + 10, hud.get_height() + 4))
+        actual_fps = clock.get_fps()
+        line1 = font.render(
+            f"{steps:3d}  {act_str:4s}  d:{death_prob_val:.2f}", True, dp_color)
+        line2 = font.render(
+            f"best:{best_steps}  {ep_split}  mg:{mgit_steps}  {actual_fps:.0f}fps",
+            True, (180, 180, 180))
+        hud_h = line1.get_height() + line2.get_height() + 6
+        hud_w = max(line1.get_width(), line2.get_width()) + 10
+        hud_bg = pygame.Surface((hud_w, hud_h))
         hud_bg.set_alpha(180)
         screen.blit(hud_bg, (0, 0))
-        screen.blit(hud, (5, 2))
+        screen.blit(line1, (5, 2))
+        screen.blit(line2, (5, line1.get_height() + 4))
 
         if dead:
             overlay = pygame.Surface((W, H))
             overlay.set_alpha(120)
             screen.blit(overlay, (0, 0))
             txt1 = big_font.render(f"DEAD  step {steps}", True, (255, 50, 50))
-            txt2 = font.render("R = restart   Q = quit", True, (255, 255, 255))
+            txt2 = font.render("R = retry  T = next  Q = quit", True, (255, 255, 255))
             screen.blit(txt1, (W // 2 - txt1.get_width() // 2, H // 2 - 30))
             screen.blit(txt2, (W // 2 - txt2.get_width() // 2, H // 2 + 20))
             pygame.display.flip()
@@ -262,12 +294,13 @@ def main():
 
         # Read action for NEXT step
         keys = pygame.key.get_pressed()
-        action = 1 if keys[pygame.K_SPACE] or keys[pygame.K_UP] else 0
+        action = 1 if keys[pygame.K_SPACE] else 0
 
         # World model prediction
-        with torch.no_grad():
+        with torch.no_grad(), torch.cuda.amp.autocast(enabled=device.type == "cuda"):
             pred_tokens, death_prob = wm.predict_next_frame(
-                ctx_t, ctx_a, temperature=0.0)
+                ctx_t, ctx_a, temperature=0.0,
+                maskgit_steps=mgit_steps)
 
         death_prob_val = death_prob[0].item()
         pred_np = pred_tokens[0].cpu().numpy()

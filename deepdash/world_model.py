@@ -1,6 +1,6 @@
-"""Transformer world model V6 — MaskGIT + block-causal + 3D-RoPE + death token + AC-CPC.
+"""Transformer world model V6 — masked prediction + block-causal + 3D-RoPE + death token + AC-CPC.
 
-Predicts next-frame tokens given past frames + actions using MaskGIT
+Predicts next-frame tokens given past frames + actions using
 masked token prediction (parallel decoding at inference).
 Death is represented as a token (not a separate head) — the 65th position
 of each frame block predicts ALIVE or DEATH via the same cross-entropy loss.
@@ -19,7 +19,7 @@ Inspired by V-JEPA 2 (Bardes et al., 2025).
 
 References:
     - IRIS (Micheli et al., ICLR 2023): block-causal attention on VQ tokens
-    - MaskGIT (Chang et al., CVPR 2022): masked generative image transformer
+    - Masked token prediction with parallel decoding
     - TWISTER (Burchert et al., ICLR 2025): AC-CPC contrastive loss
     - Su et al., 2021: RoFormer / Rotary Position Embeddings
     - Bardes et al., 2025: V-JEPA 2 — 3D factored RoPE
@@ -102,7 +102,7 @@ class WorldModel(nn.Module):
         # Weight tying: share embedding and output projection weights
         self.head.weight = self.token_embed.weight
 
-        # MaskGIT: learnable [MASK] embedding (not in vocab — head never predicts it)
+        # Learnable [MASK] embedding (not in vocab -- head never predicts it)
         self.mask_embed = nn.Parameter(torch.randn(1, 1, embed_dim) * 0.02)
 
         # AC-CPC: contrastive prediction of future hidden states
@@ -238,7 +238,7 @@ class WorldModel(nn.Module):
         block_idx[pos:] = 2 * K                    # target frame block
 
         # Block-causal: query can attend to same or earlier blocks
-        # Target block is bidirectional within (MaskGIT — all target tokens see each other)
+        # Target block is bidirectional within (all target tokens see each other)
         mask = block_idx.unsqueeze(1) < block_idx.unsqueeze(0)
 
         return mask
@@ -295,7 +295,7 @@ class WorldModel(nn.Module):
         return total_loss / max(n_pairs, 1)
 
     def forward(self, frame_tokens, actions, mask_ratio=None):
-        """Forward pass with MaskGIT masked token prediction.
+        """Forward pass with masked token prediction.
 
         Args:
             frame_tokens: (B, K+1, tokens_per_frame+1) long — K context + 1 target.
@@ -320,7 +320,7 @@ class WorldModel(nn.Module):
             act = self.action_embed(actions[:, i])
             parts.append(act.unsqueeze(1))                        # (B, 1, D)
 
-        # MaskGIT: randomly mask target frame tokens
+        # Randomly mask target frame tokens
         target_embed = self.token_embed(frame_tokens[:, K])  # (B, 65, D)
         if mask_ratio is None:
             # Cosine schedule: sample ratio, then threshold random noise
@@ -393,7 +393,7 @@ class WorldModel(nn.Module):
 
     @staticmethod
     def _maskgit_schedule(T, n_tokens):
-        """Cosine schedule for MaskGIT: how many tokens to unmask per step.
+        """Cosine schedule: how many tokens to unmask per step.
 
         Args:
             T: Number of decoding steps.
@@ -413,12 +413,11 @@ class WorldModel(nn.Module):
     @torch.no_grad()
     def predict_next_frame(self, frame_tokens, actions,
                            temperature=0.0, top_k=0, top_p=0.0,
-                           return_hidden=False, maskgit_steps=8):
-        """Predict next frame via MaskGIT iterative parallel decoding.
+                           return_hidden=False, maskgit_steps=1):
+        """Predict next frame via parallel token decoding.
 
         Phase 1: Prefill context with KV cache.
-        Phase 2: Iteratively unmask target tokens over maskgit_steps iterations,
-                 keeping highest-confidence predictions each step.
+        Phase 2: Predict all target tokens in parallel (single step by default).
 
         Args:
             frame_tokens: (B, K, tokens_per_frame+1) long — K context frames
@@ -429,7 +428,7 @@ class WorldModel(nn.Module):
             top_p: Nucleus sampling threshold. 0 = disabled.
             return_hidden: If True, also return the hidden state h_t (embed_dim)
                           at the last context position (post layer-norm).
-            maskgit_steps: Number of iterative decoding steps (default 8).
+            maskgit_steps: Number of iterative decoding steps (default 1 = parallel).
 
         Returns:
             predicted: (B, tokens_per_frame) long — predicted visual tokens.
@@ -463,7 +462,7 @@ class WorldModel(nn.Module):
         x = self.ln_f(x)
         h_t = x[:, -1] if return_hidden else None
 
-        # --- Phase 2: MaskGIT iterative decode ---
+        # --- Phase 2: Parallel decode ---
         schedule = self._maskgit_schedule(maskgit_steps, n_tokens)
 
         predicted = torch.zeros(B, n_tokens, dtype=torch.long, device=device)

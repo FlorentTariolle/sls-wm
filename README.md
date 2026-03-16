@@ -36,10 +36,10 @@ The system is composed of three distinct neural networks trained sequentially:
 
 ### B. Memory Model (M) - *The Dynamics Learner*
 
-* **Type:** Transformer with MaskGIT masked token prediction (parallel decoding at inference).
-* **Input:** Sequence of 64 FSQ codes per frame + action token + status token, with block-causal attention (bidirectional within frames, causal across) and 3D-RoPE (row, col, frame axes with factored frequency bases, inspired by V-JEPA 2).
+* **Type:** Transformer with masked token prediction (parallel decoding at inference).
+* **Input:** Sequence of 64 FSQ codes per frame + action token + status token, with block-causal attention (bidirectional within frames, causal across) and 3D-RoPE (row, col, frame axes with factored frequency bases).
 * **Function:** Predicts the next frame's 64 tokens given the current tokenized state and action — a classification task over vocabulary 1002 (1000 visual codes + ALIVE + DEATH status tokens), not continuous regression. Death is predicted via a dedicated **death token** appended as the 65th position of each frame block, turning death prediction into the same next-token classification task.
-* **Decoding:** MaskGIT (Chang et al., 2022) — during training, a random cosine-scheduled subset of target tokens is masked and predicted. At inference, all tokens start masked and are iteratively unmasked in order of confidence over ~8 steps, enabling parallel decoding instead of 65 sequential autoregressive steps.
+* **Decoding:** During training, a random cosine-scheduled subset of target tokens is masked and predicted. At inference, all 65 tokens are predicted in parallel in a single forward pass, enabling real-time decoding instead of 65 sequential autoregressive steps.
 * **Training Losses:** Focal cross-entropy on masked next-frame tokens + AC-CPC contrastive loss (TWISTER, ICLR 2025) that predicts future hidden states conditioned on actions.
 * **FSQ-structured label smoothing:** Standard label smoothing (Szegedy 2016) spreads probability mass uniformly across all wrong tokens — a ±1 FSQ neighbor (visually identical) receives the same target probability as a completely unrelated token. This is a misaligned objective: the model is equally penalized for predicting a semantically equivalent neighbor as for predicting visual nonsense. FSQ-structured label smoothing replaces the uniform distribution with a Gaussian kernel over squared FSQ coordinate distance: $w(a,b) = \exp(-d^2(a,b) / 2\sigma^2)$, where $d^2$ is the sum of squared per-dimension differences. The smoothing mass is concentrated on the ~6 immediate FSQ neighbors, giving the model explicit credit for "near-miss" predictions. Status tokens (ALIVE/DEATH) use hard targets — death prediction must be exact.
 
@@ -60,10 +60,10 @@ The system is composed of three distinct neural networks trained sequentially:
 
   Key findings: (1) ±1 neighbors produce near-identical reconstructions (MSE ≈ 0.00008). (2) +2 in one dim is **2.47× worse** than +1 in two dims — concentrated perturbations hurt more than distributed ones, validating the squared distance formulation. (3) The real damage curve is steeper than squared (6.3× vs theoretical 4×), so $\sigma$ is calibrated to 0.9 to match the empirical ratio. (4) Dim 0 (8 levels) causes ~2× more visual change per step than dims 1–3 (5 levels), because the decoder allocates more visual information to the higher-capacity dimension — unweighted `sum(Δ²)` correctly reflects this.
 * **Regularization:**
-  * **Spatial shift augmentation:** Episodes are re-tokenized through the frozen FSQ-VAE at multiple pixel offsets ({-4,-2,0,2,4} × {-3,0,3} with edge padding), creating 15 tokenization variants per episode (~15× data multiplier). Horizontal shifts are physically equivalent to a different camera scroll position.
+  * **Spatial shift augmentation:** Episodes are re-tokenized through the frozen FSQ-VAE at vertical pixel offsets ({-4,-2,0,2,4} with edge padding), creating 5 tokenization variants per episode (~5x data multiplier). Vertical shifts simulate different jump heights. Horizontal shifts were removed as the player's X position is fixed.
   * **Dual token noise:** Random token replacement (5%) acts as context-forcing dropout, while **FSQ neighbor substitution** (5%) replaces tokens with ±1 neighbors in the FSQ mixed-radix space. FSQ neighbors decode to visually near-identical patches but are distinct token indices — this forces the Transformer's embedding layer to learn that geometrically adjacent codes are semantically equivalent, injecting the codebook's topological structure as an inductive bias. The two noise types are complementary: random noise forces global robustness, neighbor noise smooths the embedding manifold.
-  * Dropout, weight decay, death frame oversampling (15×).
-* **AC-CPC Lineage:** AC-CPC extends Contrastive Predictive Coding (CPC, Oord et al., 2018), which pioneered the idea of predicting future representations in latent space rather than reconstructing raw inputs. AC-CPC adds **action conditioning** — predicting future hidden states conditioned on the action sequence taken between timesteps, making it suitable for control settings. This principle of latent-space prediction is the same one that LeCun later formalized as the **JEPA** (Joint-Embedding Predictive Architecture, 2022) framework, which retroactively unifies methods like CPC, BYOL, and VICReg under a single conceptual family. In this sense, AC-CPC can be seen as an action-conditioned instance of the JEPA paradigm.
+  * Dropout, weight decay, death frame oversampling (5x).
+* **AC-CPC:** Action-Conditional Contrastive Predictive Coding (TWISTER, Burchert et al., 2025). Predicts future hidden states conditioned on the action sequence, improving representation quality for downstream control.
 * **Architecture:** 8 layers, 256d embeddings, 8 heads, C=4 context frames (~6.7M parameters).
 * **Why Transformer over RNN:** With an LSTM/GRU, the FSQ's quantized vectors must be flattened into a continuous input (64 x 4d = 256 floats), yielding only 16x compression over the raw frame. A Transformer operates directly on discrete token indices, preserving the full 51x compression — a 3.2x improvement. The Transformer also naturally handles action conditioning via attention and captures long-range spatial dependencies across the token grid. This aligns with modern world model architectures (IRIS, GENIE) that use Transformers on discrete visual tokens.
 * **Relevance:** Learns the game's physics and temporal dynamics entirely in discrete latent space, allowing the agent to "hallucinate" precise trajectories as token sequences.
@@ -164,7 +164,7 @@ The initial dataset was recorded on the first official levels of the game (level
 ### Phase 2: Dynamics — Transformer World Model ✓ (retraining)
 
 * **Status:** Previous best trained on A100 (200 epochs, ~6.5h). Val accuracy **33.66%**, death prediction F1 ~0.97. Currently retraining with expert episodes added, 400 epochs, LR 2e-3 (auto-resume across 8h SLURM jobs).
-* **Architecture:** MaskGIT + block-causal attention + 3D-RoPE (row, col, frame) + AC-CPC contrastive loss + death token + focal loss + spatial shift augmentation (15x) + dual token noise (random 5% + FSQ neighbor 5%) + FSQ-structured label smoothing (sigma=0.9) + death oversampling (15x). 256d/8H/8L (~6.7M params).
+* **Architecture:** Parallel masked prediction + block-causal attention + 3D-RoPE (row, col, frame) + AC-CPC contrastive loss + death token + focal loss + vertical shift augmentation (5x) + dual token noise (random 5% + FSQ neighbor 5%) + FSQ-structured label smoothing (sigma=0.9) + death oversampling (5x). 256d/8H/8L (~6.7M params).
 * **Data rebalancing:** Added ~33K expert frames (clean runs) to teach the model that obstacles can be survived. Train/val split is stratified between death and expert episodes. Death metrics now tracked as precision/recall/F1 instead of raw accuracy.
 
 * **FSQ-Structured Label Smoothing impact** (vs uniform label smoothing baseline, same architecture):
@@ -186,13 +186,11 @@ The initial dataset was recorded on the first official levels of the game (level
 
 ## 6. References
 
-* **Primary Architecture:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
+* **IRIS:** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
+* **World Models:** Ha, D., & Schmidhuber, J. (2018). *World Models*. [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
 * **FSQ:** Mentzer, F., Minnen, D., Agustsson, E., & Tschannen, M. (2023). *Finite Scalar Quantization: VQ-VAE Made Simple*. [arXiv:2309.15505](https://arxiv.org/abs/2309.15505)
-* **VQ-VAE:** van den Oord, A., Vinyals, O., & Kavukcuoglu, K. (2017). *Neural Discrete Representation Learning*. [arXiv:1711.00937](https://arxiv.org/abs/1711.00937)
-* **Transformer World Model (IRIS):** Micheli, V., Alonso, E., & Fleuret, F. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
-* **MaskGIT:** Chang, H., Zhang, H., Jiang, L., Liu, C., & Freeman, W. T. (2022). *MaskGIT: Masked Generative Image Transformer*. [arXiv:2202.04200](https://arxiv.org/abs/2202.04200)
-* **CPC:** Oord, A. van den, Li, Y., & Vinyals, O. (2018). *Representation Learning with Contrastive Predictive Coding*. [arXiv:1807.03748](https://arxiv.org/abs/1807.03748)
-* **AC-CPC (TWISTER):** Burchert, J., et al. (2025). *Learning Transformer-based World Models with Contrastive Predictive Coding*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
-* **JEPA:** LeCun, Y. (2022). *A Path Towards Autonomous Machine Intelligence*. [OpenReview](https://openreview.net/pdf?id=BZ5a1r-kVsf)
-* **Block-Causal Attention:** Gupta, A., et al. (2025). *Improving Transformer World Models for Data-Efficient RL*. [arXiv:2502.01591](https://arxiv.org/abs/2502.01591)
-* **Foundational RL:** Mnih, V., et al. (2013). *Playing Atari with Deep Reinforcement Learning*. [arXiv:1312.5602](https://arxiv.org/abs/1312.5602)
+* **TWISTER:** Burchert, J., et al. (2025). *Learning Transformer-based World Models with AC-CPC*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
+* **DreamerV3:** Hafner, D., et al. (2023). *Mastering Diverse Domains through World Models*. [arXiv:2301.04104](https://arxiv.org/abs/2301.04104)
+* **PPO:** Schulman, J., et al. (2017). *Proximal Policy Optimization Algorithms*. [arXiv:1707.06347](https://arxiv.org/abs/1707.06347)
+* **Label Smoothing:** Szegedy, C., et al. (2016). *Rethinking the Inception Architecture for Computer Vision*. CVPR
+* **Focal Loss:** Lin, T.-Y., et al. (2017). *Focal Loss for Dense Object Detection*. ICCV

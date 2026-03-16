@@ -2,7 +2,7 @@
 
 Two modes:
   - Prefill only: context → h_t (what real-time play actually needs)
-  - Full predict_next_frame: prefill + MaskGIT iterative decode (dream rollouts)
+  - Full predict_next_frame: prefill + parallel token decode (dream rollouts)
 
 Tests each mode: eager, AMP, torch.compile + AMP.
 Compilation cost is paid upfront and excluded from timing.
