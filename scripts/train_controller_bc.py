@@ -185,6 +185,11 @@ def main():
     all_target_tokens = torch.from_numpy(target_tokens).long()
     all_target_actions = torch.from_numpy(target_actions).float()
 
+    # Class weight: upweight jumps so model can't just predict idle
+    jump_ratio = target_actions.mean()
+    pos_weight = torch.tensor((1 - jump_ratio) / jump_ratio, device=device)
+    print(f"Jump class weight: {pos_weight.item():.2f}x")
+
     # Initialize controller
     controller = CNNPolicy(vocab_size=args.vocab_size).to(device)
     optimizer = torch.optim.AdamW(controller.parameters(),
@@ -205,6 +210,7 @@ def main():
                          "val_loss", "val_acc", "lr", "time_s"])
 
     best_val_loss = float("inf")
+    patience_counter = 0
 
     for epoch in range(1, args.epochs + 1):
         t0 = time.time()
@@ -222,8 +228,10 @@ def main():
             h_t = all_h_t[idx].to(device)
             actions = all_target_actions[idx].to(device)
 
-            prob, _ = controller(tokens, h_t)
-            loss = F.binary_cross_entropy(prob, actions)
+            features = controller._encode(tokens, h_t)
+            logits = controller.actor(features).squeeze(-1)
+            loss = F.binary_cross_entropy_with_logits(
+                logits, actions, pos_weight=pos_weight)
 
             optimizer.zero_grad()
             loss.backward()
@@ -232,7 +240,7 @@ def main():
 
             bs = len(idx)
             train_loss_sum += loss.item() * bs
-            pred = (prob > 0.5).float()
+            pred = (logits > 0).float()
             train_correct += (pred == actions).sum().item()
             train_total += bs
 
@@ -252,12 +260,14 @@ def main():
                 h_t = all_h_t[idx].to(device)
                 actions = all_target_actions[idx].to(device)
 
-                prob, _ = controller(tokens, h_t)
-                loss = F.binary_cross_entropy(prob, actions)
+                features = controller._encode(tokens, h_t)
+                logits = controller.actor(features).squeeze(-1)
+                loss = F.binary_cross_entropy_with_logits(
+                    logits, actions, pos_weight=pos_weight)
 
                 bs = len(idx)
                 val_loss_sum += loss.item() * bs
-                pred = (prob > 0.5).float()
+                pred = (logits > 0).float()
                 val_correct += (pred == actions).sum().item()
                 val_total += bs
 
@@ -277,11 +287,17 @@ def main():
             f"{lr:.1e}", f"{dt:.1f}"])
         log_file.flush()
 
-        # Save best
+        # Save best + early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
+            patience_counter = 0
             torch.save(controller.state_dict(),
                        ckpt_dir / "controller_bc_best.pt")
+        else:
+            patience_counter += 1
+            if patience_counter >= 10:
+                print(f"Early stopping at epoch {epoch}")
+                break
 
     log_file.close()
     torch.save(controller.state_dict(), ckpt_dir / "controller_bc_final.pt")
