@@ -46,8 +46,7 @@ python -u scripts/tokenize_episodes.py \
     --episodes-dir data/death_episodes \
     --batch-size 512 \
     --levels 8 5 5 5 \
-    --shifts -4 -2 0 2 4 \
-    --shifts-v -3 0 3
+    --shifts-v -4 -2 0 2 4
 
 echo "=== Step 1b: Tokenize expert episodes (with shift augmentation) ==="
 python -u scripts/tokenize_episodes.py \
@@ -56,8 +55,7 @@ python -u scripts/tokenize_episodes.py \
     --episodes-dir data/expert_episodes \
     --batch-size 512 \
     --levels 8 5 5 5 \
-    --shifts -4 -2 0 2 4 \
-    --shifts-v -3 0 3
+    --shifts-v -4 -2 0 2 4
 
 RESUME_ARG=""
 if [ -f "$RESUME_FLAG" ]; then
@@ -70,7 +68,7 @@ echo "=== Step 2: Train Transformer ($(date)) ==="
 python -u scripts/train_transformer.py \
     --episodes-dir data/death_episodes \
     --expert-episodes-dir data/expert_episodes \
-    --epochs 400 \
+    --epochs 200 \
     --batch-size 512 \
     --lr 2e-3 \
     --context-frames 4 \
@@ -87,7 +85,7 @@ python -u scripts/train_transformer.py \
     --label-smoothing 0.1 \
     --fsq-sigma 0.9 \
     --focal-gamma 2.0 \
-    --death-oversample 15 \
+    --death-oversample 5 \
     --steps-per-epoch 500 \
     --checkpoint-dir checkpoints \
     --patience 30 \
