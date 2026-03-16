@@ -82,7 +82,7 @@ class EpisodeLoader:
         order = self.rng.permutation(len(self.dirs))
         for idx in order:
             tokens, actions, name, split = self._load(self.dirs[idx])
-            if len(tokens) >= self.context_frames + 1:
+            if len(tokens) >= self.context_frames * 3:
                 return tokens, actions, name, split
         return None
 
@@ -186,7 +186,7 @@ def main():
                 start = 0
             elif args.start_pos == "near-obstacle":
                 earliest = max(0, T - K - 25)
-                latest = max(0, T - K - 1)
+                latest = T - K * 2
                 start = rng.integers(earliest, latest + 1) if latest > earliest else earliest
             else:
                 start = rng.integers(0, max(1, T - K - 10))
