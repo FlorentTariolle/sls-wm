@@ -589,30 +589,37 @@ def main():
         last_epoch=start_epoch - 2 if start_epoch > 1 else -1)
 
     log_path = ckpt_dir / "transformer_log.csv"
-    # Append if log exists and last epoch is start_epoch-1 (seamless resume)
-    append = False
+    log_header = ["epoch", "train_total", "train_loss", "train_acc",
+                  "train_death_prec", "train_death_rec", "train_death_f1",
+                  "train_cpc",
+                  "val_total", "val_loss", "val_acc",
+                  "val_death_prec", "val_death_rec", "val_death_f1",
+                  "val_cpc",
+                  "gap", "lr", "time_s"]
+
+    # On resume: keep all rows up to start_epoch-1, then append
     if log_path.exists() and start_epoch > 1:
         with open(log_path) as f:
             rows = list(csv.reader(f))
-            if rows:
-                try:
-                    last_logged = int(rows[-1][0])
-                    append = last_logged == start_epoch - 1
-                except (ValueError, IndexError):
-                    pass
-    if append:
+        # Keep header + rows with epoch < start_epoch
+        kept = [rows[0]] if rows else []
+        for row in rows[1:]:
+            try:
+                if int(row[0]) < start_epoch:
+                    kept.append(row)
+            except (ValueError, IndexError):
+                continue
+        with open(log_path, "w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerows(kept)
         log_file = open(log_path, "a", newline="")
+        print(f"Resuming log from epoch {start_epoch} "
+              f"(kept {len(kept) - 1} previous rows)")
     else:
         log_file = open(log_path, "w", newline="")
+        log_file.write(",".join(log_header) + "\n")
+
     log_writer = csv.writer(log_file)
-    if not append:
-        log_writer.writerow(["epoch", "train_total", "train_loss", "train_acc",
-                             "train_death_prec", "train_death_rec", "train_death_f1",
-                             "train_cpc",
-                             "val_total", "val_loss", "val_acc",
-                             "val_death_prec", "val_death_rec", "val_death_f1",
-                             "val_cpc",
-                             "gap", "lr", "time_s"])
 
     patience_counter = 0
 
