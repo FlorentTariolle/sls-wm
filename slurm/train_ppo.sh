@@ -27,9 +27,8 @@ cd "$SLURM_SUBMIT_DIR" || cd /home/florent/Documents/DeepDash
 echo "$(date): Starting PPO training on $(hostname), GPU: $CUDA_VISIBLE_DEVICES"
 echo "Job ID: $SLURM_JOB_ID"
 
-# Activate conda environment
-source ~/miniconda3/etc/profile.d/conda.sh
-conda activate deepdash
+# Load modules
+module load aidl/pytorch/2.6.0-cuda12.6
 
 # First run: initialize from BC checkpoint
 # Subsequent runs: resume from latest PPO checkpoint
