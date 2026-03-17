@@ -1,50 +1,69 @@
 #!/bin/bash
-#SBATCH --job-name=deepdash-ppo
-#SBATCH --partition=gpu
-#SBATCH --gres=gpu:1
-#SBATCH --cpus-per-task=4
-#SBATCH --mem=32G
+#SBATCH -J "train_ppo_20k"
+#SBATCH -o slurm/logs/train_ppo_%j.out
+#SBATCH -e slurm/logs/train_ppo_%j.err
+#SBATCH -p ar_a100
+#SBATCH --gres=gpu:a100:1
+#SBATCH -n 1
+#SBATCH --cpus-per-gpu 8
+#SBATCH --mem 64G
 #SBATCH --time=08:00:00
-#SBATCH --output=slurm/logs/ppo_%j.out
-#SBATCH --error=slurm/logs/ppo_%j.err
+#SBATCH --exclude=c23hpda2
 #SBATCH --signal=B:USR1@300
 
 # Auto-resubmit on timeout: SIGUSR1 is sent 5 minutes before the time limit.
-# The trap saves state and resubmits this script.
 cleanup_and_resubmit() {
     echo "$(date): Caught signal, saving and resubmitting..."
-    # The training script saves checkpoints every eval_interval iterations,
-    # so the latest checkpoint is already on disk. Just resubmit.
     sbatch "$0"
     exit 0
 }
 trap cleanup_and_resubmit USR1
 
-mkdir -p slurm/logs
-
-cd "$SLURM_SUBMIT_DIR" || cd /home/florent/Documents/DeepDash
-
-echo "$(date): Starting PPO training on $(hostname), GPU: $CUDA_VISIBLE_DEVICES"
-echo "Job ID: $SLURM_JOB_ID"
-
-# Load modules
+module purge
 module load aidl/pytorch/2.6.0-cuda12.6
 
-# First run: initialize from BC checkpoint
-# Subsequent runs: resume from latest PPO checkpoint
+echo "=== Train Controller (PPO, constant LR, auto-resume) ==="
+echo "$(date): Starting on $(hostname), Job ID: $SLURM_JOB_ID"
+
+# First run: fresh from BC. Subsequent runs: resume.
 if [ -f checkpoints/controller_reinforce_latest.pt ]; then
     echo "Resuming from latest checkpoint"
-    python scripts/train_controller_reinforce.py \
-        --resume \
-        --n-iterations 20000 \
-        --pretrained checkpoints/controller_bc_best.pt &
+    RESUME_FLAG="--resume"
 else
     echo "Starting fresh from BC checkpoint"
-    python scripts/train_controller_reinforce.py \
-        --pretrained checkpoints/controller_bc_best.pt \
-        --n-iterations 20000 &
+    RESUME_FLAG=""
 fi
 
-# Wait for the training process (needed for signal handling)
+python -u scripts/train_controller_reinforce.py \
+    --transformer-checkpoint checkpoints/transformer_best.pt \
+    --pretrained checkpoints/controller_bc_best.pt \
+    $RESUME_FLAG \
+    --n-iterations 20000 \
+    --n-episodes 512 \
+    --lr 1e-4 \
+    --gamma 0.995 \
+    --lam 0.95 \
+    --clip-eps 0.2 \
+    --ppo-epochs 4 \
+    --minibatch-size 512 \
+    --entropy-coeff 0.01 \
+    --critic-coeff 0.5 \
+    --max-grad-norm 0.5 \
+    --max-dream-steps 30 \
+    --death-threshold 0.5 \
+    --token-embed-dim 16 \
+    --context-frames 4 \
+    --vocab-size 1000 \
+    --tokens-per-frame 64 \
+    --embed-dim 256 \
+    --n-heads 8 \
+    --n-layers 8 \
+    --dropout 0.1 \
+    --checkpoint-dir checkpoints \
+    --n-eval-episodes 512 \
+    --eval-interval 10 \
+    --seed 42 &
+
+# Wait for training process (needed for signal handling)
 wait $!
 echo "$(date): Training finished normally"
