@@ -49,12 +49,11 @@
   \begin{itemize}
     \item Model-free RL (DQN, PPO) requires \textbf{millions of environment interactions}
     \item World Models (Ha \& Schmidhuber, 2018): learn a \textbf{compressed model of the environment}, then train a controller entirely \textbf{in imagination}
-    \item LeCun's JEPA framework (2022): world models as a path to sample-efficient intelligence
     \item \textbf{Geometry Dash}: deterministic physics, binary action (jump/idle), precision timing. Ideal testbed for latent dynamics learning
   \end{itemize}
 
   \vspace{0.5em}
-  \textbf{Goal}: master Geometry Dash levels \emph{without ever playing the real game during training}
+  \textbf{Goal}: master Geometry Dash levels by training a controller entirely \emph{in imagination}
 \end{frame}
 
 % ==========================================================
@@ -488,31 +487,29 @@
 \end{frame}
 
 \begin{frame}{Transformer: Training Results}
-  \begin{columns}[T]
-    \column{0.5\textwidth}
-    \textbf{Previous best} (200 epochs, LR $10^{-3}$):
-    \begin{itemize}
-      \item Val accuracy: \textbf{33.66\%}
-      \item Death F1: $\sim$0.97
-      \item Overfitting gap: $\sim$3.5pp
-    \end{itemize}
+  \textbf{V1 Final} (200 epochs, LR $2 \times 10^{-3}$, 5$\times$ death oversample, vertical-only shifts):
 
-    \vspace{0.5em}
-    \textbf{Retraining} (400 epochs, LR $2 \times 10^{-3}$):
-    \begin{itemize}
-      \item + expert episodes (33K frames)
-      \item Stratified train/val split
-      \item Auto-resume across SLURM jobs
-    \end{itemize}
+  \vspace{0.5em}
+  \begin{center}
+    \small
+    \begin{tabular}{lccc}
+      \toprule
+      Metric & Baseline & Overfitted (400ep) & \textbf{V1 Final} \\
+      \midrule
+      Val accuracy & 33.66\% & 34.69\% & \textbf{36.06\%} \\
+      Val token loss & 2.383 & 2.327 & \textbf{2.255} \\
+      Death precision & -- & 48.4\% & \textbf{61.0\%} \\
+      Death F1 & -- & 63.5\% & \textbf{71.7\%} \\
+      Death P gap (train-val) & -- & 44pp & \textbf{28pp} \\
+      \bottomrule
+    \end{tabular}
+  \end{center}
 
-    \column{0.5\textwidth}
-    % TODO: add training curves plot
-    \textit{[Training curves: TODO]}
-
-    \vspace{1em}
-    % TODO: add rollout comparison (actual vs predicted frames)
-    \textit{[Rollout visualization: TODO]}
-  \end{columns}
+  \vspace{0.5em}
+  \begin{itemize}
+    \item Key fix: death oversample $15\times \to 5\times$ (eliminated death pattern memorization)
+    \item Expert episodes (33K frames) teach model that obstacles are survivable
+  \end{itemize}
 \end{frame}
 
 % ==========================================================
@@ -553,19 +550,20 @@
 \end{frame}
 
 \begin{frame}{Controller: Training Protocol}
-  \textbf{Stage 1: Behavioral Cloning} on expert gameplay
+  \textbf{Stage 1: Behavioral Cloning} (initialization)
   \begin{itemize}
-    \item Feed expert episode contexts through world model $\to$ get $\mathbf{h}_t$
-    \item Train CNNPolicy to predict expert action with cross-entropy
-    \item Initializes a policy that knows \emph{when} to jump
+    \item Death + expert episodes, class-weighted BCE (2.6$\times$ jump weight)
+    \item Feed context through world model $\to$ get $\mathbf{h}_t$, predict expert action
+    \item Val accuracy: 78\% (above 72\% always-idle baseline)
   \end{itemize}
 
   \vspace{0.5em}
-  \textbf{Stage 2: PPO in Dream} to generalize
+  \textbf{Stage 2: PPO in Dream} (generalization)
   \begin{itemize}
-    \item Near-obstacle context sampling (within 25 frames of death)
+    \item Uniform context sampling, excluding last $2K$ frames per episode
     \item Reward: $+1$ per step survived, rollout stops at death prediction
     \item 512 episodes/iteration, 4 PPO epochs, GAE ($\gamma$=0.995, $\lambda$=0.95)
+    \item 9K iterations: eval survival $19.86 \to 23.04$
   \end{itemize}
 
   \vspace{0.5em}
@@ -613,11 +611,31 @@
   \end{center}
 \end{frame}
 
-\begin{frame}{End-to-End: Agent Playing Geometry Dash}
-  % TODO: screenshots/video of the agent playing
+\begin{frame}{Deployment: Real-Time at 30 FPS}
   \begin{center}
-    \textit{[Deployment results: TODO]}
+    \small
+    \begin{tabular}{lcc}
+      \toprule
+      Stage & Time (ms) & \% Budget \\
+      \midrule
+      Screen capture & 2.5 & 9\% \\
+      Sobel preprocessing & 9.0 & 33\% \\
+      FSQ encoding & 4.5 & 16\% \\
+      Transformer ($\mathbf{h}_t$) & 9.0 & 33\% \\
+      Controller & 1.5 & 5\% \\
+      \midrule
+      \textbf{Total} & \textbf{26.5} & -- \\
+      \textbf{Budget (30 FPS)} & \textbf{33.3} & -- \\
+      \bottomrule
+    \end{tabular}
   \end{center}
+
+  \vspace{0.5em}
+  \begin{itemize}
+    \item First known real-time World Models deployment
+    \item Agent dodges simple obstacles (single/double spikes)
+    \item Struggles with complex obstacle sequences (jumps too early/often)
+  \end{itemize}
 \end{frame}
 
 % ==========================================================
@@ -628,7 +646,7 @@
   \begin{itemize}
     \item \textbf{FSQ-VAE}: sharp reconstructions, 100\% codebook utilization, no tuning headaches
     \item \textbf{Sobel preprocessing}: filters visual noise, forces structural perception
-    \item \textbf{Shift augmentation}: eliminated overfitting ($13.5\text{pp} \to 3.5\text{pp}$ gap), enabled $10\times$ higher LR
+    \item \textbf{Vertical shift augmentation}: reduced overfitting, physically valid for side-scrollers
     \item \textbf{Parallel decoding}: all 65 tokens in 1 forward pass vs 65 autoregressive. Critical for real-time play
     \item \textbf{Structured label smoothing}: empirically grounded via FSQ distance analysis
   \end{itemize}
@@ -639,8 +657,9 @@
     \item \textbf{$\beta$-VAE}: fundamentally blurry. Wide range of hyperparameter search before switching to VQ/FSQ
     \item \textbf{LR $10^{-3}$ without augmentation}: 13.5pp train/val gap at epoch 29, model memorizing
     \item \textbf{FSQ neighbor substitution}: no measurable accuracy impact (same curves), but theoretically sound and free to keep
-    \item \textbf{Pure RL controller}: CMA-ES, REINFORCE, PPO all flatlined at $\sim$12 steps. World model too death-biased near obstacles, no learnable signal
-    \item \textbf{Death-only training data}: model predicted death too aggressively, some obstacles unbeatable in dream. Fixed by adding expert episodes
+    \item \textbf{Pure RL controller}: CMA-ES, REINFORCE, PPO all flatlined at $\sim$12 steps. BC pretraining required
+    \item \textbf{Death-only training data}: 15$\times$ death oversample caused memorization (44pp precision gap). Fixed: 5$\times$ + expert episodes
+    \item \textbf{MaskGIT iterative decoding}: degraded dream quality on 64-token grid. Parallel single-step works better (bidirectional attention sufficient)
     \item \textbf{torch.compile on full model}: 23+ min compilation. Solved by compiling backbone only
   \end{itemize}
 \end{frame}
@@ -651,12 +670,11 @@
 
 \begin{frame}{Limitations \& Future Work}
   \begin{itemize}
-    \item \textbf{Accuracy ceiling at $\sim$33\%}: model plateaus regardless of regularization. May need more diverse gameplay data or architectural changes
-    \item \textbf{Dream/reality gap}: controller trained in imagination may fail on real game if predictions diverge
-    \item \textbf{No horizontal flip}: player always on left, camera always right. Cannot mirror
-    \item \textbf{Death prediction bias}: world model trained on mostly-death data predicts death too aggressively. Mitigated by adding expert episodes
+    \item \textbf{Controller precision}: jumps too often/early, struggles with complex obstacle sequences
+    \item \textbf{Dream/reality gap}: controller trained in imagination, h$_t$ distribution may differ in real game
+    \item \textbf{Sobel bottleneck}: CPU Sobel on 1032$\times$1032 takes 9ms (33\% of frame budget). GPU Sobel requires FSQ retraining
+    \item \textbf{AC-CPC underutilized}: weight 0.1 (TWISTER uses 1.0), 1-step horizon (TWISTER uses 10). h$_t$ may not encode enough temporal context
     \item \textbf{Token-level augmentation}: can't crop/resize once tokenized (tokens are patch-specific)
-    % TODO: update with actual failure modes from deployment
   \end{itemize}
 \end{frame}
 
