@@ -3,7 +3,7 @@
 Usage:
     python scripts/plot_ppo_training.py
     python scripts/plot_ppo_training.py --bc-checkpoint checkpoints/controller_bc_best.pt
-    python scripts/plot_ppo_training.py --log checkpoints/controller_reinforce_log.csv
+    python scripts/plot_ppo_training.py --log checkpoints/controller_ppo_log.csv
 """
 
 import argparse
@@ -34,7 +34,7 @@ def eval_bc_baseline(args):
     from deepdash.controller import CNNPolicy
 
     # Reuse evaluate_fixed from training script
-    from train_controller_reinforce import (
+    from train_controller_ppo import (
         evaluate_fixed, load_episodes, sample_contexts)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -82,7 +82,7 @@ def eval_bc_baseline(args):
 
 def main():
     parser = argparse.ArgumentParser(description="Plot PPO training curves")
-    parser.add_argument("--log", default="checkpoints/controller_reinforce_log.csv")
+    parser.add_argument("--log", default="checkpoints/controller_ppo_log.csv")
     parser.add_argument("--output", default=None,
                         help="Save to file instead of showing (e.g. ppo_curves.png)")
     parser.add_argument("--bc-checkpoint", default=None,

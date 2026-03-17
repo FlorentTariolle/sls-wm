@@ -1,0 +1,289 @@
+"""Deploy the World Models agent on real Geometry Dash.
+
+Captures screen at 30 FPS, runs FSQ + Transformer + Controller,
+and simulates keyboard input to play the game.
+
+Controls:
+    F5  -- toggle agent on/off
+    F10 -- quit
+
+HUD: colored dot in top-left corner
+    Black = standby, Red = idle, Green = jump
+
+Usage:
+    python scripts/deploy.py
+    python scripts/deploy.py --controller-checkpoint checkpoints/controller_ppo_best.pt
+"""
+
+import argparse
+import ctypes
+import ctypes.wintypes as wt
+import os
+import sys
+import time
+
+import cv2
+import dxcam
+import keyboard
+import numpy as np
+import torch
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+from deepdash.fsq import FSQVAE
+from deepdash.world_model import WorldModel
+from deepdash.controller import CNNPolicy
+
+
+# Win32 helpers for topmost window
+_user32 = ctypes.windll.user32
+_user32.FindWindowW.argtypes = [wt.LPCWSTR, wt.LPCWSTR]
+_user32.FindWindowW.restype = wt.HWND
+_user32.SetWindowPos.argtypes = [
+    wt.HWND, wt.HWND, ctypes.c_int, ctypes.c_int,
+    ctypes.c_int, ctypes.c_int, ctypes.c_uint,
+]
+_user32.SetWindowPos.restype = wt.BOOL
+_HWND_TOPMOST = wt.HWND(-1)
+_SWP_NOACTIVATE = 0x0010
+
+
+def _force_topmost(window_title):
+    hwnd = _user32.FindWindowW(None, window_title)
+    if hwnd:
+        _user32.SetWindowPos(
+            hwnd, _HWND_TOPMOST, 0, 0, 0, 0,
+            0x0002 | 0x0001 | _SWP_NOACTIVATE)
+
+
+def preprocess_frame(rgb, crop_x, crop_y, crop_size, target_size):
+    """RGB screenshot -> 64x64 Sobel edge map (uint8)."""
+    cropped = rgb[crop_y:crop_y + crop_size, crop_x:crop_x + crop_size]
+    gray = cv2.cvtColor(cropped, cv2.COLOR_RGB2GRAY)
+    sobel_x = cv2.Sobel(gray, cv2.CV_16S, 1, 0, ksize=3)
+    sobel_y = cv2.Sobel(gray, cv2.CV_16S, 0, 1, ksize=3)
+    edges = cv2.convertScaleAbs(cv2.magnitude(
+        sobel_x.astype(np.float32), sobel_y.astype(np.float32)))
+    return cv2.resize(edges, (target_size, target_size),
+                      interpolation=cv2.INTER_AREA)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Deploy World Models agent on Geometry Dash")
+    parser.add_argument("--vae-checkpoint", default="checkpoints/fsq_best.pt")
+    parser.add_argument("--transformer-checkpoint",
+                        default="checkpoints/transformer_best.pt")
+    parser.add_argument("--controller-checkpoint",
+                        default="checkpoints/controller_ppo_best.pt")
+    parser.add_argument("--fps", type=int, default=30)
+    parser.add_argument("--jump-threshold", type=float, default=0.5,
+                        help="Jump probability threshold (higher = less jumping)")
+    # Model architecture
+    parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
+    parser.add_argument("--vocab-size", type=int, default=1000)
+    parser.add_argument("--embed-dim", type=int, default=256)
+    parser.add_argument("--n-heads", type=int, default=8)
+    parser.add_argument("--n-layers", type=int, default=8)
+    parser.add_argument("--tokens-per-frame", type=int, default=64)
+    parser.add_argument("--context-frames", type=int, default=4)
+    parser.add_argument("--dropout", type=float, default=0.1)
+    args = parser.parse_args()
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Device: {device}")
+    K = args.context_frames
+
+    # --- Load models ---
+    print("Loading FSQ-VAE...")
+    vae = FSQVAE(levels=args.levels).to(device)
+    state = torch.load(args.vae_checkpoint, map_location=device,
+                       weights_only=True)
+    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+    vae.load_state_dict(state)
+    vae.eval()
+
+    print("Loading Transformer...")
+    wm = WorldModel(
+        vocab_size=args.vocab_size, embed_dim=args.embed_dim,
+        n_heads=args.n_heads, n_layers=args.n_layers,
+        context_frames=args.context_frames, dropout=args.dropout,
+        tokens_per_frame=args.tokens_per_frame,
+    ).to(device)
+    state = torch.load(args.transformer_checkpoint, map_location=device,
+                       weights_only=True)
+    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+    wm.load_state_dict(state)
+    wm.eval()
+
+    print("Loading Controller...")
+    controller = CNNPolicy(vocab_size=args.vocab_size).to(device)
+    state = torch.load(args.controller_checkpoint, map_location=device,
+                       weights_only=True)
+    controller.load_state_dict(state)
+    controller.eval()
+
+    # Optimize inference
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
+        if sys.platform != "win32":
+            try:
+                vae.encode = torch.compile(vae.encode)
+                wm.encode_context = torch.compile(wm.encode_context)
+                print("torch.compile enabled")
+            except Exception as e:
+                print(f"torch.compile not available: {e}")
+        else:
+            print("Skipping torch.compile (Windows)")
+
+    print("All models loaded.\n")
+
+    # --- Screen capture setup ---
+    region = (0, 0, 1920, 1080)
+    crop_x, crop_y, crop_size = 660, 48, 1032
+    cam = dxcam.create()
+    frame_interval = 1.0 / args.fps
+
+    # --- State ---
+    active = False
+    jumping = False
+    ctx_tokens = []  # list of (64,) int64 arrays
+    ctx_actions = []  # list of int actions
+    frame_count = 0
+
+    print("Controls:")
+    print("  F5  -- toggle agent on/off")
+    print("  F10 -- quit")
+    print("\nWaiting for F5...")
+
+    while True:
+        t0 = time.perf_counter()
+
+        # --- Hotkeys ---
+        if keyboard.is_pressed("f5"):
+            active = not active
+            if active:
+                ctx_tokens = []
+                ctx_actions = []
+                frame_count = 0
+                if jumping:
+                    keyboard.release("space")
+                    jumping = False
+                print(">> Agent ON")
+            else:
+                if jumping:
+                    keyboard.release("space")
+                    jumping = False
+                print(">> Agent OFF")
+            while keyboard.is_pressed("f5"):
+                time.sleep(0.01)
+
+        if keyboard.is_pressed("f10"):
+            break
+
+        # --- Capture ---
+        t1 = time.perf_counter()
+        img = cam.grab(region=region)
+        if img is None:
+            time.sleep(0.001)
+            continue
+        t_capture = time.perf_counter() - t1
+
+        # --- Sobel preprocess ---
+        t1 = time.perf_counter()
+        edge_frame = preprocess_frame(img, crop_x, crop_y, crop_size, 64)
+        t_sobel = time.perf_counter() - t1
+
+        if not active:
+            elapsed = time.perf_counter() - t0
+            if elapsed < frame_interval:
+                time.sleep(frame_interval - elapsed)
+            continue
+
+        # --- FSQ encode ---
+        t1 = time.perf_counter()
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+            frame_t = torch.from_numpy(edge_frame.astype(np.float32) / 255.0)
+            frame_t = frame_t.unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, 64, 64)
+            tokens = vae.encode(frame_t)  # (1, 8, 8)
+            tokens_flat = tokens.reshape(64).cpu().numpy().astype(np.int64)
+        t_fsq = time.perf_counter() - t1
+
+        # --- Update context buffer ---
+        ctx_tokens.append(tokens_flat)
+        ctx_actions.append(1 if jumping else 0)
+        frame_count += 1
+
+        # Keep only last K frames
+        if len(ctx_tokens) > K:
+            ctx_tokens = ctx_tokens[-K:]
+            ctx_actions = ctx_actions[-K:]
+
+        # --- Warmup: need K frames before acting ---
+        if len(ctx_tokens) < K:
+            print(f"  Warmup: {len(ctx_tokens)}/{K} frames")
+            elapsed = time.perf_counter() - t0
+            if elapsed < frame_interval:
+                time.sleep(frame_interval - elapsed)
+            continue
+
+        # --- Transformer: get h_t ---
+        t1 = time.perf_counter()
+        with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+            ctx_tok_np = np.array(ctx_tokens)  # (K, 64)
+            ctx_act_np = np.array(ctx_actions)  # (K,)
+            status = np.full((K, 1), wm.ALIVE_TOKEN, dtype=np.int64)
+            ctx_with_status = np.concatenate([ctx_tok_np, status], axis=1)
+
+            ctx_t = torch.from_numpy(ctx_with_status[None]).to(device)
+            ctx_a = torch.from_numpy(ctx_act_np[None]).to(device)
+
+            h_t = wm.encode_context(ctx_t, ctx_a)  # (1, 256)
+        t_tfm = time.perf_counter() - t1
+
+        # --- Controller: decide action ---
+        t1 = time.perf_counter()
+        with torch.no_grad():
+            current_tokens = torch.from_numpy(tokens_flat).unsqueeze(0).to(device)
+            prob, _ = controller(current_tokens, h_t.float())
+            jump = prob[0].item() > args.jump_threshold
+        t_ctrl = time.perf_counter() - t1
+
+        # --- Execute action ---
+        p = prob[0].item()
+        if jump and not jumping:
+            keyboard.press("space")
+            jumping = True
+        elif not jump and jumping:
+            keyboard.release("space")
+            jumping = False
+
+        # Track probability distribution
+        if not hasattr(main, '_probs'):
+            main._probs = []
+        main._probs.append(p)
+
+        # --- Frame rate + per-stage timing ---
+        elapsed = time.perf_counter() - t0
+        if elapsed < frame_interval:
+            time.sleep(frame_interval - elapsed)
+        total_frame_time = time.perf_counter() - t0
+        if frame_count % 30 == 0:
+            real_fps = 1.0 / total_frame_time if total_frame_time > 0 else 0
+            probs = main._probs
+            lo = sum(1 for x in probs if x < 0.3)
+            mid = sum(1 for x in probs if 0.3 <= x <= 0.7)
+            hi = sum(1 for x in probs if x > 0.7)
+            n = len(probs)
+            print(f"  frame {frame_count}: {real_fps:.0f}fps p={p:.2f} | "
+                  f"prob dist: <0.3={lo*100//n}% 0.3-0.7={mid*100//n}% >0.7={hi*100//n}%")
+            main._probs = []
+
+    # Cleanup
+    if jumping:
+        keyboard.release("space")
+    del cam
+    print("\nDone.")
+
+
+if __name__ == "__main__":
+    main()

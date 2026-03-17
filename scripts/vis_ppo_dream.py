@@ -6,7 +6,7 @@ decodes predicted tokens through the FSQ-VAE, and saves videos.
 Usage:
     python scripts/vis_ppo_dream.py
     python scripts/vis_ppo_dream.py --n-episodes 8 --max-steps 60
-    python scripts/vis_ppo_dream.py --controller checkpoints/controller_reinforce_final.pt
+    python scripts/vis_ppo_dream.py --controller checkpoints/controller_ppo_final.pt
 """
 
 import argparse
@@ -209,7 +209,7 @@ def main():
     parser = argparse.ArgumentParser(
         description="Visualize PPO controller dream rollouts")
     parser.add_argument("--controller",
-                        default="checkpoints/controller_reinforce_best.pt")
+                        default="checkpoints/controller_ppo_best.pt")
     parser.add_argument("--baseline",
                         default=None,
                         help="BC controller checkpoint for comparison "

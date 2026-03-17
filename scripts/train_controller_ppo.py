@@ -2,11 +2,11 @@
 
 CNN actor-critic policy on 8x8 token grid. PPO reuses dream rollout
 data for multiple gradient updates via clipped surrogate objective.
-Auto-tuned entropy (SAC-style), GAE advantages, survival reward.
+GAE advantages, survival reward.
 
 Usage:
-    python scripts/train_controller_reinforce.py
-    python scripts/train_controller_reinforce.py --n-iterations 2000
+    python scripts/train_controller_ppo.py
+    python scripts/train_controller_ppo.py --n-iterations 20000
 """
 
 import argparse
@@ -434,7 +434,7 @@ def main():
     # Resume: load latest checkpoint, optimizer state, and find start iteration
     start_iteration = 1
     best_eval = -float("inf")
-    resume_ckpt = ckpt_dir / "controller_reinforce_latest.pt"
+    resume_ckpt = ckpt_dir / "controller_ppo_latest.pt"
     if args.resume and resume_ckpt.exists():
         ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
         controller.load_state_dict(ckpt["controller"])
@@ -454,7 +454,7 @@ def main():
         eval_source, args.n_eval_episodes, args.context_frames, rng)
     print(f"  Eval: {args.n_eval_episodes} fixed contexts from {len(eval_source)} val episodes")
 
-    log_path = ckpt_dir / "controller_reinforce_log.csv"
+    log_path = ckpt_dir / "controller_ppo_log.csv"
     if args.resume and log_path.exists() and start_iteration > 1:
         log_file = open(log_path, "a", newline="")
         writer = csv.writer(log_file)
@@ -543,7 +543,7 @@ def main():
             if es > best_eval:
                 best_eval = es
                 torch.save(controller.state_dict(),
-                           ckpt_dir / "controller_reinforce_best.pt")
+                           ckpt_dir / "controller_ppo_best.pt")
 
         writer.writerow([
             iteration, f"{mean_surv:.2f}", f"{mean_return:.4f}",
@@ -560,7 +560,7 @@ def main():
                 "optimizer": optimizer.state_dict(),
                 "best_eval": best_eval,
                 "rng_state": rng.bit_generator.state,
-            }, ckpt_dir / "controller_reinforce_latest.pt")
+            }, ckpt_dir / "controller_ppo_latest.pt")
 
         eval_str = f" | eval={eval_surv} jmp={jump_ratio_str}" \
             if eval_surv else ""
@@ -572,7 +572,7 @@ def main():
     log_file.close()
     print(f"\nDone. Best eval survival: {best_eval:.1f}")
     torch.save(controller.state_dict(),
-               ckpt_dir / "controller_reinforce_final.pt")
+               ckpt_dir / "controller_ppo_final.pt")
 
 
 if __name__ == "__main__":

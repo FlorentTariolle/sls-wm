@@ -392,6 +392,40 @@ class WorldModel(nn.Module):
         return torch.multinomial(probs, num_samples=1).squeeze(-1)
 
     @torch.no_grad()
+    def encode_context(self, frame_tokens, actions):
+        """Encode context frames and return hidden state h_t.
+
+        Runs only the prefill phase (no prediction). Used at inference
+        when we only need h_t for the controller, not predicted tokens.
+
+        Args:
+            frame_tokens: (B, K, tokens_per_frame+1) long -- K context frames
+                          with status tokens.
+            actions: (B, K) long -- actions for context frames.
+
+        Returns:
+            h_t: (B, embed_dim) float -- hidden state at last context position.
+        """
+        K = self.context_frames
+        parts = []
+        for i in range(K):
+            parts.append(self.token_embed(frame_tokens[:, i]))
+            act = self.action_embed(actions[:, i])
+            parts.append(act.unsqueeze(1))
+        x = torch.cat(parts, dim=1)
+
+        ctx_len = K * (self.block_size + 1)
+        ctx_mask = self.attn_mask[:ctx_len, :ctx_len]
+        rope_cos_ctx = self.rope_cos[:ctx_len]
+        rope_sin_ctx = self.rope_sin[:ctx_len]
+
+        for block in self.blocks:
+            x, _ = block(x, ctx_mask, rope_cos_ctx, rope_sin_ctx,
+                         use_cache=False)
+        x = self.ln_f(x)
+        return x[:, -1]  # h_t at last context position
+
+    @torch.no_grad()
     def predict_next_frame(self, frame_tokens, actions,
                            temperature=0.0, top_k=0, top_p=0.0,
                            return_hidden=False):

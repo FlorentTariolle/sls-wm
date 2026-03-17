@@ -26,7 +26,7 @@ echo "=== Train Controller (PPO, constant LR, auto-resume) ==="
 echo "$(date): Starting on $(hostname), Job ID: $SLURM_JOB_ID"
 
 # First run: fresh from BC. Subsequent runs: resume.
-if [ -f checkpoints/controller_reinforce_latest.pt ]; then
+if [ -f checkpoints/controller_ppo_latest.pt ]; then
     echo "Resuming from latest checkpoint"
     RESUME_FLAG="--resume"
 else
@@ -34,7 +34,7 @@ else
     RESUME_FLAG=""
 fi
 
-python -u scripts/train_controller_reinforce.py \
+python -u scripts/train_controller_ppo.py \
     --transformer-checkpoint checkpoints/transformer_best.pt \
     --pretrained checkpoints/controller_bc_best.pt \
     $RESUME_FLAG \
