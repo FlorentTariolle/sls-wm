@@ -663,8 +663,8 @@
   \begin{itemize}
     \item \textbf{Controller precision}: jumps too often/early, struggles with complex obstacle sequences
     \item \textbf{Dream/reality gap}: controller trained in imagination, h$_t$ distribution may differ in real game
-    \item \textbf{Sobel bottleneck}: CPU Sobel on 1032$\times$1032 takes 9ms (33\% of frame budget). GPU Sobel requires FSQ retraining
-    \item \textbf{AC-CPC underutilized}: weight 0.1 (TWISTER uses 1.0), 1-step horizon (TWISTER uses 10). h$_t$ may not encode enough temporal context
+    \item \textbf{Sobel bottleneck}: solved with GPU Sobel (numerically identical, 7ms vs 10ms CPU)
+    \item \textbf{AC-CPC underutilized}: weight 0.1 (TWISTER uses 1.0), 4-step horizon (TWISTER uses 10). h$_t$ may not encode enough temporal context
     \item \textbf{Token-level augmentation}: can't crop/resize once tokenized (tokens are patch-specific)
   \end{itemize}
 \end{frame}

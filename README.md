@@ -62,8 +62,8 @@
 - **PPO**: uniform sampling (excluding last 2K frames), constant LR 1e-4, 512 episodes/iter, GAE (gamma=0.995, lambda=0.95)
 
 ### Deployment
-- Screen capture (dxcam) -> Sobel (10ms) -> FSQ encode (4ms) -> Transformer h_t (9ms) -> Controller (1ms) -> keyboard input
-- 30 FPS with ~6ms headroom
+- Screen capture (dxcam) -> Sobel (7ms, GPU) -> FSQ encode (4ms) -> Transformer h_t (9ms) -> Controller (1ms) -> keyboard input
+- 30 FPS with ~12ms headroom
 
 ## What Worked / Didn't Work
 
