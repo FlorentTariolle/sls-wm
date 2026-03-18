@@ -50,6 +50,7 @@
     \item Model-free RL (DQN, PPO) requires \textbf{millions of environment interactions}
     \item World Models (Ha \& Schmidhuber, 2018): learn a \textbf{compressed model of the environment}, then train a controller entirely \textbf{in imagination}
     \item \textbf{Geometry Dash}: deterministic physics, binary action (jump/idle), precision timing. Ideal testbed for latent dynamics learning
+    \item \textbf{Real-time constraint}: game runs at 30 FPS, no pausing to think. Rules out tree search (MCTS) and multi-step lookahead. Agent must react in $<$33ms
   \end{itemize}
 
   \vspace{0.5em}
@@ -101,6 +102,7 @@
 % ==========================================================
 
 \begin{frame}{Data Collection}
+  \vspace{1em}
   \begin{center}
     \begin{tabular}{cccc}
       \includegraphics[width=0.2\textwidth]{preprocessing_1_original.png} &
@@ -138,71 +140,66 @@
 \end{frame}
 
 \begin{frame}{FSQ-VAE: Architecture}
-  \vspace{0.5em}
   \begin{center}
-  \resizebox{0.9\textwidth}{!}{%
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
-    arr/.style={-{Stealth[length=2.5mm]}, thick},
-    lbl/.style={font=\scriptsize, align=center},
+    layer/.style={rectangle, draw=vcolor, fill=vcolor!8, rounded corners=2pt, align=center, font=\tiny, line width=0.5pt},
+    fsqbox/.style={rectangle, draw=vcolor, fill=vcolor!40, rounded corners=2pt, align=center, font=\tiny, line width=1pt},
+    dims/.style={font=\tiny, text=gray!70, align=center},
+    arr/.style={-{Stealth[length=1.5mm]}, thick, vcolor!60},
   ]
-    % Encoder pyramid (height = spatial size, width constant)
-    \node[rectangle, draw=vcolor, fill=vcolor!8, minimum width=1cm, minimum height=3.2cm] (e0) at (0,0) {};
-    \node[rectangle, draw=vcolor, fill=vcolor!12, minimum width=1cm, minimum height=2.4cm] (e1) at (1.5,0) {};
-    \node[rectangle, draw=vcolor, fill=vcolor!16, minimum width=1cm, minimum height=1.6cm] (e2) at (3,0) {};
-    \node[rectangle, draw=vcolor, fill=vcolor!20, minimum width=1cm, minimum height=0.8cm] (e3) at (4.5,0) {};
+    % Heights represent spatial resolution (hourglass)
+    % 64->32->16->8->8->16->32->64
+    % Encoder
+    \node[layer, minimum width=1.4cm, minimum height=3.2cm] (in) {Input\\64$\times$64$\times$1};
+    \node[layer, minimum width=1.2cm, minimum height=2.4cm, right=0.35cm of in] (c1) {Conv s2\\+ Res$\times$2};
+    \node[layer, minimum width=1.2cm, minimum height=1.6cm, right=0.35cm of c1] (c2) {Conv s2\\+ Res$\times$2};
+    \node[layer, minimum width=1.2cm, minimum height=0.8cm, right=0.35cm of c2] (c3) {Conv s2\\+ Res$\times$2};
+    \node[layer, minimum width=0.8cm, minimum height=0.5cm, right=0.25cm of c3] (proj) {1$\times$1};
 
     % FSQ bottleneck
-    \node[rectangle, draw=vcolor, fill=vcolor!40, minimum width=0.6cm, minimum height=0.5cm, line width=1.2pt] (fsq) at (6,0) {};
+    \node[fsqbox, minimum width=0.8cm, minimum height=0.5cm, right=0.35cm of proj] (fsq) {\textbf{FSQ}\\{[8,5,5,5]}};
 
-    % Decoder pyramid
-    \node[rectangle, draw=vcolor, fill=vcolor!20, minimum width=1cm, minimum height=0.8cm] (d1) at (7.5,0) {};
-    \node[rectangle, draw=vcolor, fill=vcolor!16, minimum width=1cm, minimum height=1.6cm] (d2) at (9,0) {};
-    \node[rectangle, draw=vcolor, fill=vcolor!12, minimum width=1cm, minimum height=2.4cm] (d3) at (10.5,0) {};
-    \node[rectangle, draw=vcolor, fill=vcolor!8, minimum width=1cm, minimum height=3.2cm] (d4) at (12,0) {};
+    % Decoder
+    \node[layer, minimum width=0.8cm, minimum height=0.5cm, right=0.35cm of fsq] (dproj) {1$\times$1};
+    \node[layer, minimum width=1.2cm, minimum height=0.8cm, right=0.25cm of dproj] (dc1) {TConv s2\\+ Res$\times$2};
+    \node[layer, minimum width=1.2cm, minimum height=1.6cm, right=0.35cm of dc1] (dc2) {TConv s2\\+ Res$\times$2};
+    \node[layer, minimum width=1.2cm, minimum height=2.4cm, right=0.35cm of dc2] (dc3) {TConv s2\\+ Res$\times$2};
+    \node[layer, minimum width=1.4cm, minimum height=3.2cm, right=0.35cm of dc3] (out) {Output\\64$\times$64$\times$1};
 
     % Arrows
-    \draw[arr] (e0) -- (e1);
-    \draw[arr] (e1) -- (e2);
-    \draw[arr] (e2) -- (e3);
-    \draw[arr] (e3) -- (fsq);
-    \draw[arr] (fsq) -- (d1);
-    \draw[arr] (d1) -- (d2);
-    \draw[arr] (d2) -- (d3);
-    \draw[arr] (d3) -- (d4);
+    \draw[arr] (in) -- (c1);
+    \draw[arr] (c1) -- (c2);
+    \draw[arr] (c2) -- (c3);
+    \draw[arr] (c3) -- (proj);
+    \draw[arr] (proj) -- (fsq);
+    \draw[arr] (fsq) -- (dproj);
+    \draw[arr] (dproj) -- (dc1);
+    \draw[arr] (dc1) -- (dc2);
+    \draw[arr] (dc2) -- (dc3);
+    \draw[arr] (dc3) -- (out);
 
-    % Size labels below
-    \node[below=0.15cm of e0, lbl] {64$\times$64\\$\times$1};
-    \node[below=0.15cm of e1, lbl] {32$\times$32};
-    \node[below=0.15cm of e2, lbl] {16$\times$16};
-    \node[below=0.15cm of e3, lbl] {8$\times$8$\times$4};
-    \node[below=0.15cm of fsq, lbl] {\textbf{FSQ}\\$\mathbf{z}_t$};
-    \node[below=0.15cm of d1, lbl] {8$\times$8};
-    \node[below=0.15cm of d2, lbl] {16$\times$16};
-    \node[below=0.15cm of d3, lbl] {32$\times$32};
-    \node[below=0.15cm of d4, lbl] {64$\times$64\\$\times$1};
+    % Tensor shapes below
+    \node[dims, below=0.15cm of in] {1ch};
+    \node[dims, below=0.15cm of c1] {32$\times$32\\32ch};
+    \node[dims, below=0.15cm of c2] {16$\times$16\\64ch};
+    \node[dims, below=0.15cm of c3] {8$\times$8\\128ch};
+    \node[dims, below=0.15cm of proj] {8$\times$8\\4ch};
+    \node[dims, below=0.15cm of fsq, align=center] {8$\times$8\\1000 codes};
+    \node[dims, below=0.15cm of dproj] {8$\times$8\\128ch};
+    \node[dims, below=0.15cm of dc1] {16$\times$16\\64ch};
+    \node[dims, below=0.15cm of dc2] {32$\times$32\\32ch};
+    \node[dims, below=0.15cm of out] {1ch};
 
-    % Top labels
-    \node[above=0.15cm of e0, lbl] {$\mathbf{x}_t$};
-    \node[above=0.15cm of d4, lbl] {$\hat{\mathbf{x}}_t$};
-
-    % Layer type labels inside
-    \node[font=\tiny, rotate=90] at (e1) {Conv$\downarrow$2};
-    \node[font=\tiny, rotate=90] at (e2) {Conv$\downarrow$2};
-    \node[font=\tiny, rotate=90] at (e3) {Conv$\downarrow$2};
-    \node[font=\tiny, rotate=90] at (d1) {TConv$\uparrow$2};
-    \node[font=\tiny, rotate=90] at (d2) {TConv$\uparrow$2};
-    \node[font=\tiny, rotate=90] at (d3) {TConv$\uparrow$2};
-
-    % Encoder / Decoder braces
-    \node[above=0.6cm of e1.north east, lbl] {Encoder};
-    \node[above=0.6cm of d2.north west, lbl] {Decoder};
+    % Labels
+    \node[above=0.3cm of c1, font=\scriptsize, vcolor] {Encoder};
+    \node[above=0.3cm of dc2, font=\scriptsize, vcolor] {Decoder};
   \end{tikzpicture}%
   }
   \end{center}
-
 \end{frame}
 
-\begin{frame}{FSQ-VAE: Inside a Conv$\downarrow$2 Block}
+\begin{frame}{FSQ-VAE: Inside an Encoder Block}
   Each encoder level: \quad Conv2d 3$\times$3 stride 2 $\to$ BatchNorm $\to$ SiLU $\to$ ResBlock $\times$2
 
   \vspace{0.3em}
@@ -423,36 +420,59 @@
   \vspace{0.2em}\end{frame}
 
 \begin{frame}{Dream Rollout}
-  \vspace{0.5em}
   \begin{center}
-  \resizebox{0.85\textwidth}{!}{%
+  \resizebox{\textwidth}{!}{%
   \begin{tikzpicture}[
-    block/.style={rectangle, draw=mcolor, fill=mcolor!15, rounded corners, minimum height=0.9cm, align=center, font=\scriptsize, line width=0.6pt},
+    block/.style={rectangle, draw, rounded corners, minimum height=0.9cm, minimum width=1.2cm, align=center, font=\scriptsize, line width=0.6pt},
     arr/.style={-{Stealth[length=2.5mm]}, thick},
-    lbl/.style={font=\tiny, align=center},
+    lbl/.style={font=\tiny},
   ]
-    \node[block, fill=vcolor!15, draw=vcolor] (ctx) {$\mathbf{z}_{t-K:t}$, $a_{t-K:t}$\\{\tiny real context}};
-    \node[block, right=1cm of ctx] (tfm) {\textbf{M}};
-    \node[block, right=1cm of tfm] (pred) {$\hat{\mathbf{z}}_{t+1}$};
-    \node[block, above=0.5cm of pred] (death) {$\hat{d}_{t+1}$};
+    % --- Timestep t ---
+    \node[block, fill=mcolor!20, draw=mcolor] (M1) {\textbf{M}};
+    \node[block, fill=ccolor!15, draw=ccolor, below=1.4cm of M1] (C1) {\textbf{C}};
 
-    \draw[arr] (ctx) -- (tfm);
-    \draw[arr] (tfm) -- (pred);
-    \draw[arr] (tfm) -- (death);
+    \node[lbl, left=1cm of M1, yshift=0.2cm] (h0) {$\mathbf{h}_{t-1}$};
+    \node[lbl, left=1cm of M1, yshift=-0.2cm] (z0in) {$\mathbf{z}_{t-1}, a_{t-1}$};
+    \node[lbl, below=0.4cm of C1] (a1) {$a_t$};
 
-    \draw[arr, mcolor] (pred.south) -- ++(0,-0.6) -| node[below, lbl, pos=0.5] {shift context window} (ctx.south);
+    \draw[arr] (h0) -- ([yshift=0.2cm]M1.west);
+    \draw[arr] (z0in) -- ([yshift=-0.2cm]M1.west);
+    \draw[arr, ccolor] (M1) -- node[left, lbl] {$\mathbf{h}_t$} node[right, lbl] {$\hat{\mathbf{z}}_t$} (C1);
+    \draw[arr] (C1) -- (a1);
 
-    \node[below=1.2cm of tfm, font=\scriptsize] (ht) {$\mathbf{h}_t \to$ \textbf{C}};
-    \draw[arr, ccolor] (tfm.south) -- ++(0,-0.3) -- (ht);
+    % --- Timestep t+1 ---
+    \node[block, fill=mcolor!20, draw=mcolor, right=3cm of M1] (M2) {\textbf{M}};
+    \node[block, fill=ccolor!15, draw=ccolor, below=1.4cm of M2] (C2) {\textbf{C}};
+
+    \node[lbl, below=0.4cm of C2] (a2) {$a_{t+1}$};
+
+    \draw[arr, mcolor] ([yshift=0.2cm]M1.east) -- node[above, lbl] {$\mathbf{h}_t$} node[below, lbl] {$\hat{\mathbf{z}}_t$} ([yshift=0.2cm]M2.west);
+    \draw[arr, ccolor] (M2) -- node[left, lbl] {$\mathbf{h}_{t+1}$} node[right, lbl] {$\hat{\mathbf{z}}_{t+1}$} (C2);
+    \draw[arr] (C2) -- (a2);
+
+    % --- Timestep t+2 ---
+    \node[block, fill=mcolor!20, draw=mcolor, right=3cm of M2] (M3) {\textbf{M}};
+    \node[block, fill=ccolor!15, draw=ccolor, below=1.4cm of M3] (C3) {\textbf{C}};
+
+    \node[lbl, below=0.4cm of C3] (a3) {$a_{t+2}$};
+    \node[lbl, right=0.8cm of M3] (hout) {$\mathbf{h}_{t+2}$};
+
+    \draw[arr, mcolor] ([yshift=0.2cm]M2.east) -- node[above, lbl] {$\mathbf{h}_{t+1}$} node[below, lbl] {$\hat{\mathbf{z}}_{t+1}$} ([yshift=0.2cm]M3.west);
+    \draw[arr, ccolor] (M3) -- node[left, lbl] {$\mathbf{h}_{t+2}$} node[right, lbl] {$\hat{\mathbf{z}}_{t+2}$} (C3);
+    \draw[arr] (C3) -- (a3);
+    \draw[arr, mcolor] (M3.east) -- (hout);
+
+    % Action feeds back to next M (enters at bottom 25%)
+    \draw[arr, gray!50, dashed] (a1.east) -- ++(0.8,0) |- ([yshift=-0.2cm]M2.west);
+    \draw[arr, gray!50, dashed] (a2.east) -- ++(0.8,0) |- ([yshift=-0.2cm]M3.west);
   \end{tikzpicture}%
   }
   \end{center}
 
-  \vspace{0.5em}
+  \vspace{0.3em}
   \begin{itemize}
-    \item Warmup: $K=4$ real frames as ground truth context
-    \item Dream: autoregressive prediction using own outputs
-    \item $\mathbf{h}_t$ feeds the controller; rollout stops when $\hat{d}_{t+1} > 0.5$
+    \item Seeded with $K{=}4$ real frames, then dreams autoregressively
+    \item Rollout stops when death predicted or max steps reached
   \end{itemize}
 \end{frame}
 
@@ -602,7 +622,7 @@
 
   \vspace{0.5em}
   \begin{itemize}
-    \item First known real-time World Models deployment
+    \item First known World Models agent deployed on a real game via screen capture at 30 FPS
     \item Agent dodges simple obstacles (single/double spikes)
     \item Struggles with complex obstacle sequences (jumps too early/often)
   \end{itemize}
