@@ -429,8 +429,8 @@ def main():
     model.eval()
     if sys.platform != "win32":
         try:
-            model._backbone_forward = torch.compile(model._backbone_forward)
-            print("torch.compile enabled (backbone only)")
+            model = torch.compile(model)
+            print("torch.compile enabled (full model)")
         except Exception as e:
             print(f"torch.compile not available: {e}")
 
