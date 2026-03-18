@@ -72,8 +72,8 @@ See [experiments/v1/README.md](experiments/v1/README.md) for full V1 experiment 
 
 ## References
 
-- **IRIS**: Micheli et al. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
 - **World Models**: Ha & Schmidhuber (2018). [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
+- **IRIS**: Micheli et al. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
 - **FSQ**: Mentzer et al. (2023). *Finite Scalar Quantization*. [arXiv:2309.15505](https://arxiv.org/abs/2309.15505)
 - **TWISTER**: Burchert et al. (2025). *AC-CPC for World Models*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
 - **DreamerV3**: Hafner et al. (2023). [arXiv:2301.04104](https://arxiv.org/abs/2301.04104)
