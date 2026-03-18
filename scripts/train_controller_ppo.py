@@ -11,7 +11,6 @@ Usage:
 
 import argparse
 import csv
-import math
 import re
 import sys
 import time
@@ -74,11 +73,12 @@ def sample_contexts(episodes, n, context_frames, rng):
 
 
 def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
-                  max_steps, death_threshold, device, warmup_steps):
+                  max_steps, device, warmup_steps):
     """Roll out dreams and cache data for PPO updates.
 
-    All controller forward passes are under no_grad. The cached data
-    is used for multiple PPO epochs afterwards.
+    Uses soft continuation gating: instead of hard death cutoff,
+    continuation probability c_t = 1 - death_prob is stored and used
+    to soft-gate future returns in GAE computation.
 
     Returns:
         rollout: dict with cached tensors for PPO
@@ -92,46 +92,47 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
     ctx_t = torch.from_numpy(ctx_with_status).to(device)
     ctx_a = torch.from_numpy(ctx_actions_np).to(device)
 
-    alive = torch.ones(B, dtype=torch.bool, device=device)
     survival = torch.zeros(B, dtype=torch.float32, device=device)
 
     # Cached data for PPO
-    all_token_ids = []   # (T, B, 64)
-    all_h_t = []         # (T, B, 256)
-    all_actions = []     # (T, B)
-    all_old_log_probs = []  # (T, B)
-    all_rewards = []     # (T, B)
-    all_values = []      # (T, B)
-    all_alive_masks = [] # (T, B)
+    all_token_ids = []       # (T, B, 64)
+    all_h_t = []             # (T, B, 256)
+    all_actions = []         # (T, B)
+    all_old_log_probs = []   # (T, B)
+    all_rewards = []         # (T, B)
+    all_values = []          # (T, B)
+    all_continuations = []   # (T, B) -- soft continuation c_t = 1 - death_prob
 
     use_amp = device.type == "cuda"
+    # Track cumulative continuation for survival counting
+    cum_cont = torch.ones(B, dtype=torch.float32, device=device)
 
     for step in range(max_steps):
-        if not alive.any():
-            break
-
         with torch.no_grad():
             with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 pred_tokens, death_prob, h_t = model.predict_next_frame(
                     ctx_t, ctx_a, temperature=0.0, return_hidden=True)
 
-        died = death_prob > death_threshold
-        alive &= ~died
-        survival += alive.float()
+        c_t = (1.0 - death_prob).clamp(0.0, 1.0)
+        cum_cont *= c_t
+        survival += cum_cont
+
+        # Stop if all episodes are effectively dead
+        if cum_cont.max().item() < 0.01:
+            break
 
         with torch.no_grad():
             action, log_prob, _, value = controller.act(
                 pred_tokens, h_t.float())
 
         if step >= warmup_steps:
-            alive_mask = alive.float()
             all_token_ids.append(pred_tokens)
             all_h_t.append(h_t.float())
             all_actions.append(action)
             all_old_log_probs.append(log_prob)
-            all_rewards.append(alive_mask)
+            all_rewards.append(torch.ones(B, device=device))
             all_values.append(value)
-            all_alive_masks.append(alive_mask)
+            all_continuations.append(c_t)
 
         new_status = torch.full((B, 1), m.ALIVE_TOKEN, dtype=torch.long,
                                 device=device)
@@ -143,23 +144,24 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         return None, survival
 
     rollout = {
-        'token_ids': torch.stack(all_token_ids),       # (T, B, 64)
-        'h_t': torch.stack(all_h_t),                   # (T, B, 256)
-        'actions': torch.stack(all_actions),            # (T, B)
+        'token_ids': torch.stack(all_token_ids),         # (T, B, 64)
+        'h_t': torch.stack(all_h_t),                     # (T, B, 256)
+        'actions': torch.stack(all_actions),              # (T, B)
         'old_log_probs': torch.stack(all_old_log_probs),  # (T, B)
-        'rewards': torch.stack(all_rewards),            # (T, B)
-        'values': torch.stack(all_values),              # (T, B)
-        'alive_masks': torch.stack(all_alive_masks),    # (T, B)
+        'rewards': torch.stack(all_rewards),              # (T, B)
+        'values': torch.stack(all_values),                # (T, B)
+        'continuations': torch.stack(all_continuations),  # (T, B)
     }
     return rollout, survival
 
 
-def compute_gae(rewards, values, gamma, lam):
-    """Compute GAE advantages and returns.
+def compute_gae(rewards, values, continuations, gamma, lam):
+    """Compute GAE advantages and returns with soft continuation gating.
 
     Args:
         rewards: (T, B)
         values: (T, B)
+        continuations: (T, B) -- c_t = 1 - death_prob, gates future returns
     Returns:
         advantages: (T, B)
         returns: (T, B)
@@ -171,19 +173,47 @@ def compute_gae(rewards, values, gamma, lam):
     for t in reversed(range(T)):
         if t == T - 1:
             next_value = torch.zeros(B, device=rewards.device)
+            next_cont = torch.zeros(B, device=rewards.device)
         else:
             next_value = values[t + 1]
-        delta = rewards[t] + gamma * next_value - values[t]
-        gae = delta + gamma * lam * gae
+            next_cont = continuations[t + 1]
+        delta = rewards[t] + gamma * next_cont * next_value - values[t]
+        gae = delta + gamma * lam * next_cont * gae
         advantages[t] = gae
 
     returns = advantages + values
     return advantages, returns
 
 
+class PercentileNormalizer:
+    """EMA-based percentile advantage normalization (DreamerV3/TWISTER).
+
+    Tracks the 5th-95th percentile range of returns via EMA and normalizes
+    advantages by this range. Prevents outlier returns from dominating.
+    """
+    def __init__(self, momentum=0.99):
+        self.momentum = momentum
+        self.low = None
+        self.high = None
+
+    def update(self, returns):
+        p5 = torch.quantile(returns, 0.05).item()
+        p95 = torch.quantile(returns, 0.95).item()
+        if self.low is None:
+            self.low, self.high = p5, p95
+        else:
+            self.low = self.momentum * self.low + (1 - self.momentum) * p5
+            self.high = self.momentum * self.high + (1 - self.momentum) * p95
+
+    def normalize(self, advantages):
+        scale = max(1.0, self.high - self.low)
+        return advantages / scale
+
+
 def ppo_update(controller, optimizer, rollout, advantages, returns,
                clip_eps=0.2, entropy_coeff=0.01, critic_coeff=0.5,
-               max_grad_norm=0.5, n_epochs=4, minibatch_size=None):
+               max_grad_norm=0.5, n_epochs=4, minibatch_size=None,
+               pct_normalizer=None, ema_controller=None, ema_decay=0.98):
     """PPO clipped objective with multiple epochs on cached rollout data.
 
     Returns:
@@ -195,6 +225,10 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     if minibatch_size is None:
         minibatch_size = N
 
+    # Update percentile normalizer with current returns
+    if pct_normalizer is not None:
+        pct_normalizer.update(returns.reshape(-1))
+
     # Flatten rollout for minibatch sampling
     token_ids_flat = rollout['token_ids'].reshape(N, -1)
     h_t_flat = rollout['h_t'].reshape(N, -1)
@@ -202,12 +236,6 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     old_log_probs_flat = rollout['old_log_probs'].reshape(N)
     advantages_flat = advantages.reshape(N)
     returns_flat = returns.reshape(N)
-    alive_flat = rollout['alive_masks'].reshape(N)
-
-    # Only train on alive transitions
-    alive_idx = alive_flat.nonzero(as_tuple=True)[0]
-    if len(alive_idx) == 0:
-        return 0.0, 0.0, 0.0
 
     total_loss = 0.0
     total_entropy = 0.0
@@ -215,9 +243,9 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     n_updates = 0
 
     for epoch in range(n_epochs):
-        perm = alive_idx[torch.randperm(len(alive_idx), device=alive_idx.device)]
+        perm = torch.randperm(N, device=advantages_flat.device)
 
-        for start in range(0, len(perm), minibatch_size):
+        for start in range(0, N, minibatch_size):
             idx = perm[start:start + minibatch_size]
 
             mb_token_ids = token_ids_flat[idx]
@@ -227,9 +255,12 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             mb_advantages = advantages_flat[idx]
             mb_returns = returns_flat[idx]
 
-            # Normalize advantages per minibatch
-            mb_advantages = (mb_advantages - mb_advantages.mean()) / \
-                (mb_advantages.std() + 1e-8)
+            # Percentile-based advantage normalization
+            if pct_normalizer is not None:
+                mb_advantages = pct_normalizer.normalize(mb_advantages)
+            else:
+                mb_advantages = (mb_advantages - mb_advantages.mean()) / \
+                    (mb_advantages.std() + 1e-8)
 
             # Forward pass with current policy
             prob, value = controller(mb_token_ids, mb_h_t)
@@ -244,7 +275,7 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             surr2 = ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) * mb_advantages
             actor_loss = -torch.min(surr1, surr2).mean()
 
-            # Clipped critic loss (PPO detail: prevent value function explosion)
+            # Critic loss
             critic_loss = F.mse_loss(value, mb_returns)
 
             # Fixed entropy bonus
@@ -261,6 +292,13 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             torch.nn.utils.clip_grad_norm_(controller.parameters(),
                                             max_grad_norm)
             optimizer.step()
+
+            # Update EMA target critic
+            if ema_controller is not None:
+                with torch.no_grad():
+                    for p, p_ema in zip(controller.parameters(),
+                                        ema_controller.parameters()):
+                        p_ema.data.mul_(ema_decay).add_(p.data, alpha=1 - ema_decay)
 
             total_loss += loss.item()
             total_entropy += entropy.mean().item()
@@ -425,6 +463,14 @@ def main():
     print(f"Controller: CNNPolicy embed={args.token_embed_dim} "
           f"({n_params:,} params, actor-critic)")
 
+    import copy
+    ema_controller = copy.deepcopy(controller)
+    ema_controller.eval()
+    for p in ema_controller.parameters():
+        p.requires_grad_(False)
+
+    pct_normalizer = PercentileNormalizer(momentum=0.99)
+
     optimizer = torch.optim.Adam(controller.parameters(), lr=args.lr,
                                  eps=1e-5)
 
@@ -499,7 +545,6 @@ def main():
         rollout, survival = dream_rollout(
             model, controller, ctx_tokens, ctx_actions,
             max_steps=args.max_dream_steps,
-            death_threshold=args.death_threshold,
             device=device,
             warmup_steps=args.context_frames)
 
@@ -511,6 +556,7 @@ def main():
         with torch.no_grad():
             advantages, returns = compute_gae(
                 rollout['rewards'], rollout['values'],
+                rollout['continuations'],
                 args.gamma, args.lam)
 
         # PPO update (4 epochs on cached data)
@@ -521,7 +567,9 @@ def main():
             critic_coeff=args.critic_coeff,
             max_grad_norm=args.max_grad_norm,
             n_epochs=args.ppo_epochs,
-            minibatch_size=args.minibatch_size)
+            minibatch_size=args.minibatch_size,
+            pct_normalizer=pct_normalizer,
+            ema_controller=ema_controller)
 
         elapsed = time.time() - t0
         mean_surv = survival.mean().item()
