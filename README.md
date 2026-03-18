@@ -8,7 +8,7 @@
 
 | Component | Model | Params | Function |
 |-----------|-------|--------|----------|
-| **V** (Vision) | FSQ-VAE [8,5,5,5] | 1.4M | 64x64 Sobel frame -> 8x8 discrete tokens (1000 codes) |
+| **V** (Vision) | FSQ-VAE [8,5,5,5] | 1.9M (0.9M encoder) | 64x64 Sobel frame -> 8x8 discrete tokens (1000 codes) |
 | **M** (Memory) | Transformer 256d/8H/8L | 6.7M | Predicts next tokens + death, produces h_t |
 | **C** (Controller) | CNNPolicy | 40K | Token grid + h_t -> jump/idle |
 
