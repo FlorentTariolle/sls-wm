@@ -10,6 +10,7 @@ data/videos/
 eval_output/data/death_episodes/*_s[+-]*_[+-]*/
 data/death_episodes/*_s*/
 data/expert_episodes/*_s*/
+slurm/logs/
 
 # LaTeX build artifacts
 *.aux
