@@ -26,3 +26,4 @@ slurm/logs/
 *.fls
 *.synctex.gz
 presentation/*.pdf
+checkpoints/*_final.pt
