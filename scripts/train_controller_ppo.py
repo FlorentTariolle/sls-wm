@@ -495,6 +495,12 @@ def main():
         # Restore RNG state for reproducible continuation
         rng = np.random.default_rng()
         rng.bit_generator.state = ckpt["rng_state"]
+        # Restore EMA controller and percentile normalizer
+        if "ema_controller" in ckpt:
+            ema_controller.load_state_dict(ckpt["ema_controller"])
+        if "pct_low" in ckpt:
+            pct_normalizer.low = ckpt["pct_low"]
+            pct_normalizer.high = ckpt["pct_high"]
         print(f"Resumed from iteration {ckpt['iteration']} "
               f"(best_eval={best_eval:.2f})")
 
@@ -616,6 +622,9 @@ def main():
                 "optimizer": optimizer.state_dict(),
                 "best_eval": best_eval,
                 "rng_state": rng.bit_generator.state,
+                "ema_controller": ema_controller.state_dict(),
+                "pct_low": pct_normalizer.low,
+                "pct_high": pct_normalizer.high,
             }, ckpt_dir / "controller_ppo_latest.pt")
 
         eval_str = f" | eval={eval_surv} jmp={jump_ratio_str}" \
