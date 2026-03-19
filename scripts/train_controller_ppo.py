@@ -73,12 +73,11 @@ def sample_contexts(episodes, n, context_frames, rng):
 
 
 def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
-                  max_steps, device, warmup_steps, jump_penalty=0.0):
+                  max_steps, death_threshold, device, warmup_steps,
+                  jump_penalty=0.0):
     """Roll out dreams and cache data for PPO updates.
 
-    Uses soft continuation gating: instead of hard death cutoff,
-    continuation probability c_t = 1 - death_prob is stored and used
-    to soft-gate future returns in GAE computation.
+    Hard death cutoff: rollout ends for an episode when death_prob > threshold.
 
     Returns:
         rollout: dict with cached tensors for PPO
@@ -92,6 +91,7 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
     ctx_t = torch.from_numpy(ctx_with_status).to(device)
     ctx_a = torch.from_numpy(ctx_actions_np).to(device)
 
+    alive = torch.ones(B, dtype=torch.bool, device=device)
     survival = torch.zeros(B, dtype=torch.float32, device=device)
 
     # Cached data for PPO
@@ -101,41 +101,39 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
     all_old_log_probs = []   # (T, B)
     all_rewards = []         # (T, B)
     all_values = []          # (T, B)
-    all_continuations = []   # (T, B) -- soft continuation c_t = 1 - death_prob
+    all_alive_masks = []     # (T, B)
 
     use_amp = device.type == "cuda"
-    # Track cumulative continuation for survival counting
-    cum_cont = torch.ones(B, dtype=torch.float32, device=device)
 
     for step in range(max_steps):
+        if not alive.any():
+            break
+
         with torch.no_grad():
             with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
                 pred_tokens, death_prob, h_t = model.predict_next_frame(
                     ctx_t, ctx_a, temperature=0.0, return_hidden=True)
 
-        c_t = (1.0 - death_prob).clamp(0.0, 1.0)
-        cum_cont *= c_t
-        survival += cum_cont
-
-        # Stop if all episodes are effectively dead
-        if cum_cont.max().item() < 0.01:
-            break
+        died = death_prob > death_threshold
+        alive &= ~died
+        survival += alive.float()
 
         with torch.no_grad():
             action, log_prob, _, value = controller.act(
                 pred_tokens, h_t.float())
 
         if step >= warmup_steps:
+            alive_mask = alive.float()
             all_token_ids.append(pred_tokens)
             all_h_t.append(h_t.float())
             all_actions.append(action)
             all_old_log_probs.append(log_prob)
-            reward = torch.ones(B, device=device)
+            reward = alive_mask.clone()
             if jump_penalty > 0:
-                reward -= jump_penalty * action.float()
+                reward -= jump_penalty * action.float() * alive_mask
             all_rewards.append(reward)
             all_values.append(value)
-            all_continuations.append(c_t)
+            all_alive_masks.append(alive_mask)
 
         new_status = torch.full((B, 1), m.ALIVE_TOKEN, dtype=torch.long,
                                 device=device)
@@ -153,18 +151,17 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         'old_log_probs': torch.stack(all_old_log_probs),  # (T, B)
         'rewards': torch.stack(all_rewards),              # (T, B)
         'values': torch.stack(all_values),                # (T, B)
-        'continuations': torch.stack(all_continuations),  # (T, B)
+        'alive_masks': torch.stack(all_alive_masks),      # (T, B)
     }
     return rollout, survival
 
 
-def compute_gae(rewards, values, continuations, gamma, lam):
-    """Compute GAE advantages and returns with soft continuation gating.
+def compute_gae(rewards, values, gamma, lam):
+    """Compute GAE advantages and returns.
 
     Args:
         rewards: (T, B)
         values: (T, B)
-        continuations: (T, B) -- c_t = 1 - death_prob, gates future returns
     Returns:
         advantages: (T, B)
         returns: (T, B)
@@ -176,12 +173,10 @@ def compute_gae(rewards, values, continuations, gamma, lam):
     for t in reversed(range(T)):
         if t == T - 1:
             next_value = torch.zeros(B, device=rewards.device)
-            next_cont = torch.zeros(B, device=rewards.device)
         else:
             next_value = values[t + 1]
-            next_cont = continuations[t + 1]
-        delta = rewards[t] + gamma * next_cont * next_value - values[t]
-        gae = delta + gamma * lam * next_cont * gae
+        delta = rewards[t] + gamma * next_value - values[t]
+        gae = delta + gamma * lam * gae
         advantages[t] = gae
 
     returns = advantages + values
@@ -239,6 +234,12 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     old_log_probs_flat = rollout['old_log_probs'].reshape(N)
     advantages_flat = advantages.reshape(N)
     returns_flat = returns.reshape(N)
+    alive_flat = rollout['alive_masks'].reshape(N)
+
+    # Only train on alive transitions
+    alive_idx = alive_flat.nonzero(as_tuple=True)[0]
+    if len(alive_idx) == 0:
+        return 0.0, 0.0, 0.0
 
     total_loss = 0.0
     total_entropy = 0.0
@@ -246,9 +247,9 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     n_updates = 0
 
     for epoch in range(n_epochs):
-        perm = torch.randperm(N, device=advantages_flat.device)
+        perm = alive_idx[torch.randperm(len(alive_idx), device=alive_idx.device)]
 
-        for start in range(0, N, minibatch_size):
+        for start in range(0, len(perm), minibatch_size):
             idx = perm[start:start + minibatch_size]
 
             mb_token_ids = token_ids_flat[idx]
@@ -558,6 +559,7 @@ def main():
         rollout, survival = dream_rollout(
             model, controller, ctx_tokens, ctx_actions,
             max_steps=args.max_dream_steps,
+            death_threshold=args.death_threshold,
             device=device,
             warmup_steps=args.context_frames,
             jump_penalty=args.jump_penalty)
@@ -570,7 +572,6 @@ def main():
         with torch.no_grad():
             advantages, returns = compute_gae(
                 rollout['rewards'], rollout['values'],
-                rollout['continuations'],
                 args.gamma, args.lam)
 
         # PPO update (4 epochs on cached data)
