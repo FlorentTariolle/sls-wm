@@ -380,7 +380,7 @@ def main():
     parser.add_argument("--n-episodes", type=int, default=512)
     parser.add_argument("--max-dream-steps", type=int, default=30)
     parser.add_argument("--death-threshold", type=float, default=0.5)
-    parser.add_argument("--jump-penalty", type=float, default=0.05,
+    parser.add_argument("--jump-penalty", type=float, default=0.2,
                         help="Per-jump reward penalty to discourage over-jumping")
     parser.add_argument("--context-frames", type=int, default=4)
     # Policy architecture (CNN)

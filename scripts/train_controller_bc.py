@@ -115,6 +115,8 @@ def main():
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=1e-4)
+    parser.add_argument("--jump-class-weight", type=float, default=1.5,
+                        help="Jump class weight for BCE (0 = auto from data ratio)")
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--seed", type=int, default=42)
     # Model architecture (must match transformer)
@@ -200,8 +202,11 @@ def main():
 
     # Class weight: upweight jumps so model can't just predict idle
     jump_ratio = target_actions.mean()
-    pos_weight = torch.tensor((1 - jump_ratio) / jump_ratio, device=device)
-    print(f"Jump class weight: {pos_weight.item():.2f}x")
+    if args.jump_class_weight > 0:
+        pos_weight = torch.tensor(args.jump_class_weight, device=device)
+    else:
+        pos_weight = torch.tensor((1 - jump_ratio) / jump_ratio, device=device)
+    print(f"Jump class weight: {pos_weight.item():.2f}x (data ratio: {(1-jump_ratio)/jump_ratio:.2f}x)")
 
     # Initialize controller
     controller = CNNPolicy(vocab_size=args.vocab_size).to(device)
