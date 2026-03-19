@@ -223,6 +223,7 @@ def main():
 
     ctx_t, ctx_a, frame_img, steps, ep_split = new_episode()
     dead = False
+    dead_by_death = False
     death_prob_val = 0.0
     action = 0
     best_steps = 0
@@ -276,7 +277,10 @@ def main():
             overlay = pygame.Surface((W, H))
             overlay.set_alpha(120)
             screen.blit(overlay, (0, 0))
-            txt1 = big_font.render(f"DEAD  step {steps}", True, (255, 50, 50))
+            if dead_by_death:
+                txt1 = big_font.render(f"DEAD  step {steps}", True, (255, 50, 50))
+            else:
+                txt1 = big_font.render(f"END  step {steps}", True, (200, 200, 200))
             txt2 = font.render("R = retry  T = next  Q = quit", True, (255, 255, 255))
             screen.blit(txt1, (W // 2 - txt1.get_width() // 2, H // 2 - 30))
             screen.blit(txt2, (W // 2 - txt2.get_width() // 2, H // 2 + 20))
@@ -300,11 +304,15 @@ def main():
         frame_img = decode_tokens(vae, pred_np, device)
         steps += 1
 
-        if death_prob_val > 0.5 or (args.max_steps > 0 and steps >= args.max_steps):
+        actually_died = death_prob_val > 0.5
+        reached_max = args.max_steps > 0 and steps >= args.max_steps
+        if actually_died or reached_max:
             dead = True
+            dead_by_death = actually_died
             best_steps = max(best_steps, steps)
-            reason = f"death_prob={death_prob_val:.3f}" if death_prob_val > 0.5 else "max steps"
-            print(f"  DEAD at step {steps} ({reason})")
+            reason = f"death_prob={death_prob_val:.3f}" if actually_died else "max steps"
+            label = "DEAD" if actually_died else "END"
+            print(f"  {label} at step {steps} ({reason})")
         else:
             # Shift context
             act_t = torch.tensor([[action]], dtype=torch.long, device=device)
