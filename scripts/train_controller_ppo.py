@@ -208,11 +208,33 @@ class PercentileNormalizer:
         return advantages / scale
 
 
+def pmpo_actor_loss(log_probs, advantages, alpha=0.5):
+    """PMPO policy loss (Dreamer 4): uses sign of advantages.
+
+    Splits transitions into positive (A >= 0) and negative (A < 0) sets,
+    averages log-likelihood separately, then combines. Ignores advantage
+    magnitude, giving equal focus to all improving/worsening actions.
+    """
+    pos_mask = advantages >= 0
+    neg_mask = ~pos_mask
+
+    loss = torch.tensor(0.0, device=log_probs.device)
+    if pos_mask.any():
+        loss = loss - alpha * log_probs[pos_mask].mean()
+    if neg_mask.any():
+        loss = loss + (1 - alpha) * log_probs[neg_mask].mean()
+    return loss
+
+
 def ppo_update(controller, optimizer, rollout, advantages, returns,
                clip_eps=0.2, entropy_coeff=0.01, critic_coeff=0.5,
                max_grad_norm=0.5, n_epochs=4, minibatch_size=None,
-               pct_normalizer=None, ema_controller=None, ema_decay=0.98):
-    """PPO clipped objective with multiple epochs on cached rollout data.
+               pct_normalizer=None, ema_controller=None, ema_decay=0.98,
+               mtp_coeff=0.1):
+    """PMPO + MTP update with multiple epochs on cached rollout data.
+
+    Uses PMPO (sign-based advantages) instead of clipped PPO objective.
+    Adds multi-token prediction auxiliary loss for better timing.
 
     Returns:
         mean_loss, mean_entropy, mean_value
@@ -236,6 +258,17 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
     returns_flat = returns.reshape(N)
     alive_flat = rollout['alive_masks'].reshape(N)
 
+    # Build MTP targets: for each transition at time t, the future actions
+    # at t+1, t+2, ..., t+L-1 (padded with 0 if out of bounds)
+    L = controller.mtp_steps
+    actions_seq = rollout['actions']  # (T, B)
+    mtp_targets = torch.zeros(T, B, L, device=actions_flat.device)
+    for k in range(L):
+        end = T - k
+        if end > 0:
+            mtp_targets[:end, :, k] = actions_seq[k:k + end]
+    mtp_targets_flat = mtp_targets.reshape(N, L)
+
     # Only train on alive transitions
     alive_idx = alive_flat.nonzero(as_tuple=True)[0]
     if len(alive_idx) == 0:
@@ -255,37 +288,34 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             mb_token_ids = token_ids_flat[idx]
             mb_h_t = h_t_flat[idx]
             mb_actions = actions_flat[idx]
-            mb_old_log_probs = old_log_probs_flat[idx]
             mb_advantages = advantages_flat[idx]
             mb_returns = returns_flat[idx]
-
-            # Percentile-based advantage normalization
-            if pct_normalizer is not None:
-                mb_advantages = pct_normalizer.normalize(mb_advantages)
-            else:
-                mb_advantages = (mb_advantages - mb_advantages.mean()) / \
-                    (mb_advantages.std() + 1e-8)
+            mb_mtp_targets = mtp_targets_flat[idx]
 
             # Forward pass with current policy
             prob, value = controller(mb_token_ids, mb_h_t)
-            prob = prob.clamp(1e-6, 1 - 1e-6)  # prevent NaN
+            prob = prob.clamp(1e-6, 1 - 1e-6)
             dist = torch.distributions.Bernoulli(probs=prob)
-            new_log_prob = dist.log_prob(mb_actions.float())
+            log_prob = dist.log_prob(mb_actions.float())
             entropy = dist.entropy()
 
-            # Clipped surrogate objective
-            ratio = (new_log_prob - mb_old_log_probs).exp()
-            surr1 = ratio * mb_advantages
-            surr2 = ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) * mb_advantages
-            actor_loss = -torch.min(surr1, surr2).mean()
+            # PMPO actor loss (sign-based advantages)
+            actor_loss = pmpo_actor_loss(log_prob, mb_advantages)
 
             # Critic loss
             critic_loss = F.mse_loss(value, mb_returns)
 
-            # Fixed entropy bonus
+            # Entropy bonus
             entropy_loss = -entropy_coeff * entropy.mean()
 
-            loss = actor_loss + critic_coeff * critic_loss + entropy_loss
+            # MTP auxiliary loss: predict future actions
+            mtp_probs = controller.predict_future_actions(
+                mb_token_ids, mb_h_t)
+            mtp_loss = F.binary_cross_entropy(
+                mtp_probs, mb_mtp_targets, reduction='mean')
+
+            loss = actor_loss + critic_coeff * critic_loss + \
+                entropy_loss + mtp_coeff * mtp_loss
 
             # Skip NaN updates
             if torch.isnan(loss) or torch.isinf(loss):

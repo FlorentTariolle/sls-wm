@@ -240,9 +240,10 @@ class CNNPolicy(nn.Module):
     """
 
     def __init__(self, vocab_size=1000, grid_size=8, token_embed_dim=16,
-                 h_dim=256):
+                 h_dim=256, mtp_steps=8):
         super().__init__()
         self.grid_size = grid_size
+        self.mtp_steps = mtp_steps
 
         # Learnable token embedding (separate from world model's)
         self.token_embed = nn.Embedding(vocab_size, token_embed_dim)
@@ -262,6 +263,11 @@ class CNNPolicy(nn.Module):
         nn.init.zeros_(self.actor.bias)
         nn.init.zeros_(self.critic.weight)
         nn.init.zeros_(self.critic.bias)
+
+        # Multi-token prediction: predict next mtp_steps actions from features
+        self.mtp_head = nn.Linear(head_input, mtp_steps)
+        nn.init.zeros_(self.mtp_head.weight)
+        nn.init.zeros_(self.mtp_head.bias)
 
     def _encode(self, token_ids, h_t):
         """Encode token grid + h_t into shared representation.
@@ -301,6 +307,15 @@ class CNNPolicy(nn.Module):
         prob = self.actor(features).squeeze(-1).sigmoid()
         value = self.critic(features).squeeze(-1)
         return prob, value
+
+    def predict_future_actions(self, token_ids, h_t):
+        """Predict next mtp_steps action probabilities.
+
+        Returns:
+            mtp_probs: (B, mtp_steps) jump probabilities for next steps
+        """
+        features = self._encode(token_ids, h_t)
+        return self.mtp_head(features).sigmoid()
 
     def act(self, token_ids, h_t):
         """Sample action from Bernoulli policy.
