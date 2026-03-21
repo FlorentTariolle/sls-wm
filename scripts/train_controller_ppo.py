@@ -299,8 +299,16 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             log_prob = dist.log_prob(mb_actions.float())
             entropy = dist.entropy()
 
-            # PMPO actor loss (sign-based advantages)
-            actor_loss = pmpo_actor_loss(log_prob, mb_advantages)
+            # Clipped surrogate objective
+            ratio = (log_prob - old_log_probs_flat[idx]).exp()
+            if pct_normalizer is not None:
+                norm_adv = pct_normalizer.normalize(mb_advantages)
+            else:
+                norm_adv = (mb_advantages - mb_advantages.mean()) / \
+                    (mb_advantages.std() + 1e-8)
+            surr1 = ratio * norm_adv
+            surr2 = ratio.clamp(1.0 - clip_eps, 1.0 + clip_eps) * norm_adv
+            actor_loss = -torch.min(surr1, surr2).mean()
 
             # Critic loss
             critic_loss = F.mse_loss(value, mb_returns)
