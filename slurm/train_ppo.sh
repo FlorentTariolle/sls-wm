@@ -49,7 +49,7 @@ python -u scripts/train_controller_ppo.py \
     --entropy-coeff 0.01 \
     --critic-coeff 0.5 \
     --max-grad-norm 0.5 \
-    --max-dream-steps 30 \
+    --max-dream-steps 45 \
     --death-threshold 0.5 \
     --token-embed-dim 16 \
     --context-frames 4 \
