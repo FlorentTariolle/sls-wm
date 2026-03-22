@@ -113,20 +113,29 @@ See [experiments/v1/](experiments/v1/) for full logs and hyperparameters.
 
 ---
 
-## V3 -- Ideas
+## V3 -- Planned
 
 Goal: maximize model quality while fitting within the 30 FPS inference window.
+
+### First change
+- **16x16 input grid**: 256 tokens/frame instead of 64. Finer spatial resolution for jump pads, orbs, and precise obstacle boundaries. Benchmarked at 13.8ms (vs 13.4ms for 8x8). Requires full pipeline retrain.
+
+### Further ideas
 
 #### Vision (V) / FSQ-VAE
 | Idea | Description |
 |------|-------------|
 | **Asymmetric encoder/decoder** | Lighter encoder (1 ResBlock/stage), heavier decoder (3 ResBlocks/stage). Faster deploy since only encoder runs at inference. |
 | **FSQ levels sweep** | Try [8,8,5,5]=1600 or [10,5,5,4]=1000 to redistribute capacity across dimensions. |
-| **Larger input grid** | 16x16 instead of 8x8 for finer spatial resolution. Better capture of small game mechanics (jump pads, orbs). |
 
 #### Transformer (M)
 | Idea | Description |
 |------|-------------|
 | **Scale up model** | Increase embedding dim (256 -> 384/512) and/or depth (8 -> 12 layers). Push model size to the edge of 30 FPS budget. |
 | **Distill to smaller model** | Train large, distill to deployment-sized model. Best of both worlds. |
-| **Separate space/time attention** (Dreamer 4) | 3 space-only + 1 temporal layer, repeated. Space layers skip KV cache from prior frames. More relevant at larger grid or longer context. |
+| **Separate space/time attention** (Dreamer 4) | 3 space-only + 1 temporal layer, repeated. Space layers skip KV cache from prior frames. More relevant at larger grid. |
+
+#### Controller (C) / PPO
+| Idea | Description |
+|------|-------------|
+| **Multi-token prediction** | Already implemented (8-step). Evaluate impact via ablation. |
