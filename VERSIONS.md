@@ -61,7 +61,7 @@ See [experiments/v1/](experiments/v1/) for full logs and hyperparameters.
 
 ---
 
-## V2 -- Complete (2026-03-18 to 2026-03-20)
+## V2 -- Complete (2026-03-18 to 2026-03-22)
 
 ### Changes applied
 
@@ -70,47 +70,46 @@ See [experiments/v1/](experiments/v1/) for full logs and hyperparameters.
 
 #### Transformer (M)
 - Removed masking entirely (all tokens predicted, no ground truth leakage)
-- AC-CPC weight 0.1 -> 0.5
+- AC-CPC weight 0.1 -> 1.0 (swept 0.5, then 1.0. Metrics similar, but 1.0 produced visibly better dreams)
 - torch.compile full model (static graph)
-- Val acc 34.2% (vs V1 36.1%), death F1 0.76 (vs V1 0.72), train/val gap halved (1.7% vs 3.7%)
+- Val acc 34.2%, death F1 0.73, train/val gap halved (1.6% vs V1 3.7%)
 
 #### Controller (C) / PPO
 - Jump penalty 0.2/jump, BC class weight 1.5x (was 2.6x)
 - Percentile-based advantage normalization (EMA 5th-95th)
 - EMA target critic (decay 0.98)
-- Constant LR, 15K iterations
-- BC val acc 83.6% (vs V1 78%), PPO best eval 24.68 (vs V1 23.04), jump ratio 0.27 (vs V1 0.43)
+- Multi-token prediction: auxiliary loss predicting 8 future actions (coeff 0.1)
+- 45-step dream rollouts (was 30)
+- Constant LR, 5K iterations (plateaus after 3-5K)
+- BC val acc 83.6% (vs V1 78%)
 
-### V2 results
-- **Level 1 progress**: 12% (vs V1 10%)
-- Less random jumping, but timing still off by 1-2 frames
-- World model understands jump orbs/pads, controller ignores them (representation exists, PPO signal insufficient)
+### V2 final results
+- **Level 1 progress**: 11% (vs V1 10%), better generalization to other levels (1-2 extra obstacles cleared), slightly better use of jump orbs and pads
+- **PPO eval survival**: 31.41 best (45-step rollouts, not comparable to V1's 30-step cap)
+- Jump ratio 0.32 (vs V1 0.43)
 - GPU Sobel in deployment: 7ms (was 10ms CPU)
 
 ### What worked
 - Masking removal: halved train/val gap, more honest metrics, no quality loss
-- Jump penalty (0.2) + lower BC weight (1.5x): jump ratio 0.43 -> 0.27, less over-jumping
+- Jump penalty (0.2) + lower BC weight (1.5x): jump ratio 0.43 -> 0.32, less over-jumping
 - Percentile advantage normalization + EMA critic: stable training, no NaN
 - Strict data split: proper train/val separation across all models
-- AC-CPC 0.5: death F1 improved (0.72 -> 0.76), dream quality visibly better
+- AC-CPC 1.0: dream quality visibly better despite similar metrics to 0.5
+- 45-step rollouts: agent learns longer-horizon consequences of actions
+- MTP auxiliary loss: stable, adds timing awareness
+- 5K iterations sufficient: eval plateaus after 3-5K, saves 2/3 compute
 
 ### What didn't work
 - **Soft continuation gating**: agent exploited airtime (jump once, idle while airborne for full reward). Reverted to hard death cutoff.
+- **PMPO**: sign-based advantages oscillated wildly with binary action space. Entropy collapsed then recovered repeatedly. Reverted to clipped PPO.
 - **Symlog discrete value prediction**: skipped, +1/step reward doesn't need it
 - **Resume state loss**: percentile normalizer + EMA critic reset on resume caused artificial eval jump. Fixed by saving/restoring in checkpoint.
 - **Eval context RNG**: shared with training RNG, changed on resume. Fixed with dedicated eval RNG.
-- **FSQ neighbor substitution ablation**: not run, deprioritized
 
 ### V2 known issues
 - **Jump timing**: main bottleneck. Off by 1-2 frames at 30 FPS.
 - **Dream/reality gap**: policy learned in dream doesn't fully transfer.
 - **Controller ignores game mechanics**: h_t encodes jump orbs/pads but PPO doesn't learn to use them.
-
-### V2 next experiments
-- **AC-CPC weight 1.0** (in progress)
-- **Longer rollouts** (30 -> 45 steps)
-- **PMPO** (Dreamer 4): use sign(advantage) instead of magnitude
-- **Multi-token prediction** (Dreamer 4): predict 8 actions ahead from h_t for better timing
 
 ---
 
