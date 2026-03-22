@@ -139,6 +139,17 @@ Goal: maximize model quality while fitting within the 30 FPS inference window.
 |------|-------------|
 | **MTP ablation** | Already implemented (8-step). Evaluate impact by comparing with/without. |
 
+---
+
+## V4 -- Ideas
+
+#### Transformer (M)
+| Idea | Description |
+|------|-------------|
+| **Motion-compensated token prediction** | Exploit side-scroller structure: shift token grid left by learned scroll offset, only predict new right column (~8 tokens instead of 64). Speed is constant within a level, learnable from context frames. Massive reduction in prediction complexity. |
+
+---
+
 ### Discarded ideas
 - ~~16x16 grid~~: 8x8 dream quality is sufficient, timing issue is dream/reality gap not spatial resolution
 - ~~PMPO~~: oscillated with binary action space
