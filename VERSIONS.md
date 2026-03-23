@@ -113,9 +113,43 @@ See [experiments/v1/](experiments/v1/) for full logs and hyperparameters.
 
 ---
 
-## V3 -- Ideas
+## V3 -- Complete (2026-03-22 to 2026-03-23)
 
-Goal: maximize model quality while fitting within the 30 FPS inference window.
+### Changes applied
+
+#### Transformer (M)
+- Scaled embedding dim 256 -> 384 (14.7M params, was 6.7M)
+- Val acc 35.6% (vs V2 34.2%), death F1 0.78 (vs V2 0.73), val CPC 0.166 (vs V2 0.203)
+- Train/val gap increased (3.6% vs V2 1.6%) due to extra capacity. May need dropout 0.15 later.
+- Best epoch 146, inference 14.6ms (was 12.8ms)
+
+#### Controller (C)
+- BC val acc 87.1% (vs V2 83.6%)
+- PPO best eval 33.48 (45-step rollouts), plateau at ~32.5 around 7K iters
+- Jump ratio 0.30
+
+### V3 deployment results (best model overall)
+- **Level 1**: 20% (vs V2 11%, V1 10%)
+- **Level 3**: 12%
+- **Level 5**: 8%
+- **Level 6**: 8%
+- **Polargeist VE** (custom): 21%
+- **Polargeist V2** (custom): 17%
+- Best generalization across all tested levels
+
+### What worked
+- 384d embedding: significant quality jump across all metrics (acc, death F1, CPC)
+- Richer h_t directly improved BC (78% -> 83.6% -> 87.1% across V1/V2/V3)
+- PPO continued improving past 5K iters (unlike 256d which plateaued at 3-5K)
+
+### V3 known issues
+- **Overfitting**: train/val gap 3.6% (up from V2 1.6%). Dropout 0.15 may help.
+- **Jump timing**: still the main bottleneck
+- **Dream/reality gap**: persists
+
+---
+
+## Further ideas
 
 #### Vision (V) / FSQ-VAE
 | Idea | Description |
@@ -126,13 +160,13 @@ Goal: maximize model quality while fitting within the 30 FPS inference window.
 #### Transformer (M)
 | Idea | Description |
 |------|-------------|
-| **Scale up model** | Increase embedding dim (256 -> 384/512) and/or depth (8 -> 12 layers). Push model size to the edge of 30 FPS budget. |
-| **Distill to smaller model** | Train large, distill to deployment-sized model. Best of both worlds. |
+| **Distill to smaller model** | Train large, distill to deployment-sized model (h_t matching). Novel for world models. |
 | **Separate space/time attention** (Dreamer 4) | 3 space-only + 1 temporal layer, repeated. Space layers skip KV cache from prior frames. |
-| **Multi-level feature extraction** (V-JEPA 2.1) | Concatenate h_t from multiple intermediate transformer layers. Gives controller access to different abstraction levels (spatial edges + temporal dynamics). |
+| **Multi-level feature extraction** (V-JEPA 2.1) | Concatenate h_t from multiple intermediate transformer layers. Gives controller access to different abstraction levels. |
 | **More training data** | Record on more diverse levels and custom levels. |
 | **Lower death threshold** (0.5 -> 0.3) | Stricter dream deaths for more precise jump timing. |
 | **Context frames 4 -> 6** | More temporal context for obstacle distance estimation. |
+| **Increase dropout** (0.1 -> 0.15) | Address V3 overfitting from larger model capacity. |
 
 #### Controller (C) / PPO
 | Idea | Description |
