@@ -16,6 +16,9 @@ from pathlib import Path
 import numpy as np
 import torch
 import torch.nn.functional as F
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
 from torch.utils.data import DataLoader, Dataset
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.fsq import FSQVAE, fsqvae_loss, grwm_slowness, grwm_uniformity
@@ -160,6 +163,8 @@ def main():
     with open(ckpt_dir / "fsq_args.json", "w") as f:
         json.dump(vars(args), f, indent=2)
 
+    wandb_init(project="deepdash", name=f"fsq-{args.levels}", config=vars(args))
+
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
 
@@ -252,6 +257,13 @@ def main():
             ])
             log_file.flush()
 
+            wandb_log({
+                "epoch": epoch,
+                "train/recon": train_recon, "train/slow": train_slow,
+                "train/uniform": train_uniform,
+                "val/recon": val_recon, "lr": lr,
+            })
+
             if val_recon < best_val_recon:
                 best_val_recon = val_recon
                 # Strip _orig_mod. prefix from torch.compile for portable checkpoints
@@ -262,6 +274,7 @@ def main():
         print("\nInterrupted — saving final checkpoint...")
 
     log_file.close()
+    wandb_finish()
     clean_state = {k.removeprefix("_orig_mod."): v
                    for k, v in model.state_dict().items()}
     torch.save(clean_state, ckpt_dir / "fsq_final.pt")

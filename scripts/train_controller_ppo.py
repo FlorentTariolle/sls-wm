@@ -18,6 +18,9 @@ from pathlib import Path
 
 import numpy as np
 import torch
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -548,6 +551,9 @@ def main():
         with open(ckpt_dir / "controller_ppo_args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
 
+    wandb_init(project="deepdash", name=f"ppo-{args.embed_dim}d",
+               config=vars(args))
+
     # Fixed eval contexts (from val episodes only)
     # Use a dedicated RNG so eval contexts are identical across resumes
     eval_rng = np.random.default_rng(args.seed)
@@ -658,6 +664,19 @@ def main():
             eval_surv, jump_ratio_str, f"{elapsed:.1f}"])
         log_file.flush()
 
+        log_data = {
+            "iteration": iteration,
+            "train/survival": mean_surv,
+            "train/return": mean_return,
+            "train/loss": mean_loss,
+            "train/value": mean_value,
+            "train/entropy": mean_entropy,
+        }
+        if eval_surv:
+            log_data["eval/survival"] = float(eval_surv)
+            log_data["eval/jump_ratio"] = float(jump_ratio_str)
+        wandb_log(log_data)
+
         # Save latest checkpoint for resume
         if iteration % args.eval_interval == 0:
             torch.save({
@@ -679,6 +698,7 @@ def main():
               f"lr={lr:.1e}{eval_str} | {elapsed:.1f}s")
 
     log_file.close()
+    wandb_finish()
     print(f"\nDone. Best eval survival: {best_eval:.1f}")
     torch.save(controller.state_dict(),
                ckpt_dir / "controller_ppo_final.pt")

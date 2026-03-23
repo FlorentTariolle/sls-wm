@@ -15,6 +15,9 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -528,6 +531,9 @@ def main():
         with open(ckpt_dir / "transformer_args.json", "w") as f:
             json.dump(vars(args), f, indent=2)
 
+    wandb_init(project="deepdash", name=f"transformer-{args.embed_dim}d",
+               config=vars(args))
+
     # torch.compile full model (static graph since masking was removed)
     if sys.platform != "win32":
         try:
@@ -657,6 +663,15 @@ def main():
             ])
             log_file.flush()
 
+            wandb_log({
+                "epoch": epoch,
+                "train/loss": train_loss, "train/acc": train_acc,
+                "train/death_f1": train_d_f1, "train/cpc": train_cpc,
+                "val/loss": val_loss, "val/acc": val_acc,
+                "val/death_f1": val_d_f1, "val/cpc": val_cpc,
+                "gap": gap, "lr": lr,
+            })
+
             # Save full state
             torch.save({
                 "epoch": epoch,
@@ -693,6 +708,7 @@ def main():
         }, ckpt_dir / "transformer_state.pt")
 
     log_file.close()
+    wandb_finish()
     torch.save(_unwrap(model).state_dict(), ckpt_dir / "transformer_final.pt")
     print(f"\nTraining complete. Best val total loss: {best_val_loss:.4f}")
     print(f"Checkpoints saved to {ckpt_dir}/")
