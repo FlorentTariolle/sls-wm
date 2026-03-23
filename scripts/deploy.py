@@ -97,6 +97,95 @@ def preprocess_frame(rgb, crop_x, crop_y, crop_size, target_size, device=None):
                       interpolation=cv2.INTER_AREA)
 
 
+@torch.no_grad()
+def encode_context_cached(wm, frame_tokens, actions, past_kvs):
+    """Encode context frames with sliding-window KV cache.
+
+    On the first call (past_kvs is None), encodes all K frames and caches
+    KV for the full context.  On subsequent calls, evicts the oldest frame
+    slot from the cache and runs only the newest frame + action through the
+    transformer, reusing cached KV for the K-1 older frames.
+
+    RoPE note: cached KV retains the RoPE angles from its original encoding
+    positions.  After the window slides, those angles are off by one frame
+    slot (66 positions).  In practice the temporal RoPE band uses theta=10000,
+    so the angular error from a 1-step shift is negligible.  Use --no-kv-cache
+    to verify numerically if needed.
+
+    Args:
+        wm: WorldModel instance.
+        frame_tokens: (1, K, block_size) long -- K context frames with status.
+        actions: (1, K) long -- actions for context frames.
+        past_kvs: list[tuple(k, v)] per layer, or None on first call.
+            Each k, v has shape (B, n_heads, cached_seq_len, head_dim).
+
+    Returns:
+        h_t: (1, embed_dim) -- hidden state at last context position.
+        new_kvs: updated KV cache for next call.
+    """
+    K = wm.context_frames
+    BS = wm.block_size          # 65
+    slot = BS + 1               # 66 tokens per frame slot (frame block + action)
+
+    if past_kvs is None:
+        # -- Cold start: encode full context, cache everything --
+        parts = []
+        for i in range(K):
+            parts.append(wm.token_embed(frame_tokens[:, i]))    # (1, 65, D)
+            act = wm.action_embed(actions[:, i])
+            parts.append(act.unsqueeze(1))                       # (1,  1, D)
+        x = torch.cat(parts, dim=1)                              # (1, K*66, D)
+
+        ctx_len = K * slot
+        ctx_mask = wm.attn_mask[:ctx_len, :ctx_len]
+        rope_cos = wm.rope_cos[:ctx_len]
+        rope_sin = wm.rope_sin[:ctx_len]
+
+        new_kvs = []
+        for block in wm.blocks:
+            x, kv = block(x, ctx_mask, rope_cos, rope_sin, use_cache=True)
+            new_kvs.append(kv)
+        x = wm.ln_f(x)
+        return x[:, -1], new_kvs
+
+    # -- Incremental: evict oldest slot, run newest slot with cache --
+    # Trim oldest frame slot (first `slot` positions) from every layer's KV
+    trimmed_kvs = []
+    for (pk, pv) in past_kvs:
+        trimmed_kvs.append((pk[:, :, slot:, :], pv[:, :, slot:, :]))
+
+    # Build embeddings for the NEW frame + action only (66 tokens)
+    new_frame = wm.token_embed(frame_tokens[:, -1])              # (1, 65, D)
+    new_action = wm.action_embed(actions[:, -1]).unsqueeze(1)    # (1,  1, D)
+    x_new = torch.cat([new_frame, new_action], dim=1)            # (1, 66, D)
+
+    # RoPE for the last frame slot: positions (K-1)*66 .. K*66-1
+    start = (K - 1) * slot
+    end = K * slot
+    rope_cos_new = wm.rope_cos[start:end]
+    rope_sin_new = wm.rope_sin[start:end]
+
+    # Attention mask for new tokens attending to (cached_prefix + new_tokens).
+    # cached_prefix length = (K-1)*66 after trimming.
+    cached_len = (K - 1) * slot
+    # Block-causal: frame tokens (0..64) can't see the action token (65),
+    # but the action token can see everything.
+    attn_len = cached_len + slot
+    sdpa_mask = torch.ones(slot, attn_len, dtype=torch.bool,
+                           device=x_new.device)
+    # Frame tokens in the new block must not attend to the action token
+    sdpa_mask[:BS, cached_len + BS:] = False
+
+    new_kvs = []
+    for i, block in enumerate(wm.blocks):
+        x_new, kv = block(x_new, ~sdpa_mask, rope_cos_new, rope_sin_new,
+                          past_kv=trimmed_kvs[i], use_cache=True)
+        new_kvs.append(kv)
+    x_new = wm.ln_f(x_new)
+    # h_t is at the action token position (last of the new tokens)
+    return x_new[:, -1], new_kvs
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Deploy World Models agent on Geometry Dash")
@@ -117,6 +206,9 @@ def main():
     parser.add_argument("--tokens-per-frame", type=int, default=64)
     parser.add_argument("--context-frames", type=int, default=4)
     parser.add_argument("--dropout", type=float, default=0.1)
+    parser.add_argument("--use-kv-cache", action=argparse.BooleanOptionalAction,
+                        default=True,
+                        help="Sliding-window KV cache for encode_context (default: on)")
     args = parser.parse_args()
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -165,7 +257,8 @@ def main():
         else:
             print("Skipping torch.compile (Windows)")
 
-    print("All models loaded.\n")
+    kv_status = "ON" if args.use_kv_cache else "OFF"
+    print(f"All models loaded. KV cache: {kv_status}\n")
 
     # --- Screen capture setup ---
     region = (0, 0, 1920, 1080)
@@ -179,6 +272,7 @@ def main():
     ctx_tokens = []  # list of (64,) int64 arrays
     ctx_actions = []  # list of int actions
     frame_count = 0
+    kv_cache = None   # sliding KV cache (list of (k,v) per layer)
 
     print("Controls:")
     print("  F5  -- toggle agent on/off")
@@ -195,6 +289,7 @@ def main():
                 ctx_tokens = []
                 ctx_actions = []
                 frame_count = 0
+                kv_cache = None
                 if jumping:
                     keyboard.release("space")
                     jumping = False
@@ -267,7 +362,11 @@ def main():
             ctx_t = torch.from_numpy(ctx_with_status[None]).to(device)
             ctx_a = torch.from_numpy(ctx_act_np[None]).to(device)
 
-            h_t = wm.encode_context(ctx_t, ctx_a)  # (1, 256)
+            if args.use_kv_cache:
+                h_t, kv_cache = encode_context_cached(
+                    wm, ctx_t, ctx_a, kv_cache)
+            else:
+                h_t = wm.encode_context(ctx_t, ctx_a)  # (1, embed_dim)
         t_tfm = time.perf_counter() - t1
 
         # --- Controller: decide action ---
