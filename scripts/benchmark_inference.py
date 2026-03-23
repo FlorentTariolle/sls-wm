@@ -59,6 +59,8 @@ def main():
     parser.add_argument("--device", default=None, help="Force device (cpu/cuda)")
     parser.add_argument("--n-runs", type=int, default=200)
     parser.add_argument("--warmup", type=int, default=20)
+    parser.add_argument("--profile", action="store_true",
+                        help="Run torch.profiler and export Chrome trace")
     args = parser.parse_args()
 
     if args.device:
@@ -128,6 +130,29 @@ def main():
         bench(lambda: _with_amp(lambda: model.predict_next_frame(
             ctx_s, actions, return_hidden=True)),
               "Full predict_next_frame")
+
+    # --- Profiler ---
+    if args.profile and use_cuda:
+        from torch.profiler import profile, ProfilerActivity
+        print(f"\n=== Profiler (10 iterations) ===")
+        with torch.no_grad():
+            for _ in range(5):  # warmup
+                _with_amp(lambda: model.predict_next_frame(
+                    ctx_s, actions, return_hidden=True))
+            sync()
+            with profile(
+                activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+                record_shapes=True,
+            ) as prof:
+                for _ in range(10):
+                    _with_amp(lambda: model.predict_next_frame(
+                        ctx_s, actions, return_hidden=True))
+                sync()
+        print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=20))
+        trace_path = "profiler_trace.json"
+        prof.export_chrome_trace(trace_path)
+        print(f"\nChrome trace exported to {trace_path}")
+        print("Open in chrome://tracing or https://ui.perfetto.dev/")
 
     # --- torch.compile + AMP ---
     if sys.platform != "win32":

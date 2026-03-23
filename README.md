@@ -9,23 +9,24 @@
 | Component | Model | Params | Function |
 |-----------|-------|--------|----------|
 | **V** (Vision) | FSQ-VAE [8,5,5,5] | 1.9M (0.9M encoder) | 64x64 Sobel frame -> 8x8 discrete tokens (1000 codes) |
-| **M** (Memory) | Transformer 256d/8H/8L | 6.7M | Predicts next tokens + death, produces h_t |
-| **C** (Controller) | CNNPolicy | 40K | Token grid + h_t -> jump/idle |
+| **M** (Memory) | Transformer 512d/8H/8L | 25.9M | Predicts next tokens + death, produces h_t |
+| **C** (Controller) | CNNPolicy + MTP | ~50K | Token grid + h_t -> jump/idle (+ 8-step action prediction) |
 
-## Key Results (V1)
+## Latest Results (V3)
 
-| Metric | Value |
-|--------|-------|
-| Transformer val accuracy | 36.06% |
-| Death prediction F1 (val) | 0.72 |
-| PPO eval survival | 19.86 -> 23.04 (9K iters) |
-| Inference latency | 27ms avg (30 FPS) |
-| Deployment | Dodges simple obstacles, struggles with complex sequences |
+| Metric | V1 | V2 | V3 (current) |
+|--------|-----|-----|-------------|
+| Transformer params | 6.7M | 6.7M | 25.9M |
+| Val accuracy | 36.1% | 34.2% | 36.6% |
+| Death F1 (val) | 0.72 | 0.73 | 0.78 |
+| BC val acc | 78% | 83.6% | 90% |
+| Level 1 progress | 10% | 11% | 20% |
+| Inference | 27ms | 24ms | ~27ms |
 
 ## Novel Contributions
 
-- **FSQ-structured label smoothing**: Gaussian kernel over FSQ coordinate distance instead of uniform smoothing. +0.81pp val acc, -31% CPC loss.
-- **Real-time World Models deployment**: Screen capture agent on a real game at 30 FPS (no game API).
+- **FSQ-structured label smoothing**: Gaussian kernel over FSQ coordinate distance instead of uniform smoothing
+- **Real-time World Models deployment**: screen capture agent on a real game at 30 FPS (no game API)
 
 ## Pipeline
 
@@ -52,22 +53,25 @@
 - GRWM regularization, shift augmentation, cosine LR, 200 epochs on A100
 
 ### Transformer
-- Block-causal attention + 3D-RoPE + AC-CPC (TWISTER)
+- Block-causal attention + 3D-RoPE + AC-CPC weight 1.0 (TWISTER)
 - Focal loss + structured label smoothing (sigma=0.9) + dual token noise
 - Vertical-only shift augmentation (5x), death oversample 5x
+- No masking (all target tokens predicted, no ground truth leakage)
+- 512d embedding, 8 heads, 8 layers, dropout 0.15
 - 200 epochs, LR 2e-3, batch 512
 
 ### Controller
-- **BC**: death + expert episodes, class-weighted BCE (2.6x jumps), early stopping. Val acc 78%.
-- **PPO**: uniform sampling (excluding last 2K frames), constant LR 1e-4, 512 episodes/iter, GAE (gamma=0.995, lambda=0.95)
+- **BC**: death + expert episodes, class-weighted BCE (1.5x jumps), early stopping
+- **PPO**: clipped surrogate + MTP auxiliary loss (8-step), jump penalty 0.2/jump, percentile-based advantage normalization, EMA target critic (0.98), 45-step dream rollouts, constant LR 1e-4
 
 ### Deployment
-- Screen capture (dxcam) -> Sobel (7ms, GPU) -> FSQ encode (4ms) -> Transformer h_t (9ms) -> Controller (1ms) -> keyboard input
-- 30 FPS with ~12ms headroom
+- Screen capture (dxcam) -> Sobel (7ms, GPU) -> FSQ encode (4ms) -> Transformer h_t (14ms) -> Controller (1ms) -> keyboard input
+- Sliding-window KV cache (4x prefill reduction)
+- 30 FPS real-time
 
-## What Worked / Didn't Work
+## Version History
 
-See [experiments/v1/README.md](experiments/v1/README.md) for full V1 experiment archive.
+See [VERSIONS.md](VERSIONS.md) for full V0 -> V1 -> V2 -> V3 evolution.
 
 ## References
 
@@ -76,6 +80,7 @@ See [experiments/v1/README.md](experiments/v1/README.md) for full V1 experiment 
 - **FSQ**: Mentzer et al. (2023). *Finite Scalar Quantization*. [arXiv:2309.15505](https://arxiv.org/abs/2309.15505)
 - **TWISTER**: Burchert et al. (2025). *AC-CPC for World Models*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
 - **DreamerV3**: Hafner et al. (2023). [arXiv:2301.04104](https://arxiv.org/abs/2301.04104)
+- **Dreamer 4**: Hafner et al. (2025). *Training Agents Inside of Scalable World Models*. [arXiv:2509.24527](https://arxiv.org/abs/2509.24527)
 - **PPO**: Schulman et al. (2017). [arXiv:1707.06347](https://arxiv.org/abs/1707.06347)
 - **Label Smoothing**: Szegedy et al. (2016). CVPR
 - **Focal Loss**: Lin et al. (2017). ICCV
