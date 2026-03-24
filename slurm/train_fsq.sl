@@ -23,6 +23,13 @@ module load aidl/pytorch/2.6.0-cuda12.6
 export PATH="$HOME/.local/bin:$PATH"
 pip install --user wandb 2>/dev/null
 
+echo "=== Step 0: Pre-compute shift augmentation ==="
+python -u scripts/shift_episodes.py \
+    --episodes-dir data/death_episodes \
+    --expert-episodes-dir data/expert_episodes \
+    --shifts-v -4 -2 0 2 4
+
+echo "=== Step 1: Train FSQ-VAE ==="
 python -u scripts/train_fsq.py \
     --episodes-dir data/death_episodes \
     --expert-episodes-dir data/expert_episodes \

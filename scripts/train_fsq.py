@@ -15,7 +15,6 @@ from pathlib import Path
 
 import numpy as np
 import torch
-import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
@@ -55,40 +54,11 @@ class FramePairDataset(Dataset):
         return self.frames_t[idx], self.frames_t1[idx]
 
 
-def augment_batch(ft, ft1, pad=4, size=64):
-    """Batch-level random shift augmentation (per-sample offsets via grid_sample)."""
-    B = ft.size(0)
-    # Random pixel offsets per sample: values in [0, 2*pad]
-    di = torch.randint(0, 2 * pad + 1, (B,), device=ft.device, dtype=ft.dtype)
-    dj = torch.randint(0, 2 * pad + 1, (B,), device=ft.device, dtype=ft.dtype)
-    # Convert pixel offsets to normalized [-1, 1] grid coordinates
-    # Original 64px maps to [-1, 1]. Shift by di/dj pixels = shift by di/32 in norm coords.
-    # Crop window: start at (-1 + di/32), span 64px = 2.0 in norm coords (no pad needed).
-    # With pad=4, we want to sample from [-1 - 4/32, 1 + 4/32] range (edge-padded by grid_sample).
-    shift_i = (di - pad) / (size / 2)  # (B,) in [-pad/32, +pad/32]
-    shift_j = (dj - pad) / (size / 2)
-    # Base grid: uniform [-1, 1] for 64x64
-    grid_y = torch.linspace(-1, 1, size, device=ft.device)
-    grid_x = torch.linspace(-1, 1, size, device=ft.device)
-    gy, gx = torch.meshgrid(grid_y, grid_x, indexing='ij')
-    grid = torch.stack([gx, gy], dim=-1).unsqueeze(0).expand(B, -1, -1, -1)  # (B, 64, 64, 2)
-    # Apply per-sample shifts
-    grid = grid.clone()
-    grid[..., 0] += shift_j.view(B, 1, 1)
-    grid[..., 1] += shift_i.view(B, 1, 1)
-    # grid_sample with border padding (equivalent to edge replication)
-    out_t = F.grid_sample(ft, grid, mode='nearest', padding_mode='border', align_corners=True)
-    out_t1 = F.grid_sample(ft1, grid, mode='nearest', padding_mode='border', align_corners=True)
-    return out_t, out_t1
-
-
 def train_epoch(model, loader, optimizer, alpha_slow, alpha_uniform,
-                scaler=None, amp_dtype=None, augment=False):
+                scaler=None, amp_dtype=None):
     model.train()
     total_recon, total_slow, total_uniform, n = 0, 0, 0, 0
     for ft, ft1 in loader:
-        if augment:
-            ft, ft1 = augment_batch(ft, ft1)
         with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
             recon_t, z_e_t, _ = model(ft)
             recon_t1, z_e_t1, _ = model(ft1)
@@ -173,10 +143,25 @@ def main():
     val_set = get_val_episodes(args.episodes_dir, args.expert_episodes_dir)
 
     import re
-    import shutil
     shift_re = re.compile(r"_s[+-]\d+_[+-]\d+$")
 
-    # Clean stale tokenization artifacts so FSQ trains on base episodes only
+    # Verify shift directories exist (created by shift_episodes.py)
+    has_shifts = False
+    for ep_dir in [args.episodes_dir, args.expert_episodes_dir]:
+        p = Path(ep_dir)
+        if p.exists():
+            for ep in p.glob("*"):
+                if ep.is_dir() and shift_re.search(ep.name):
+                    has_shifts = True
+                    break
+        if has_shifts:
+            break
+    if not has_shifts:
+        print("ERROR: No shift augmentation found. "
+              "Run scripts/shift_episodes.py first.")
+        sys.exit(1)
+
+    # Delete tokens.npy from all episodes (will be re-created after FSQ)
     for ep_dir in [args.episodes_dir, args.expert_episodes_dir]:
         p = Path(ep_dir)
         if not p.exists():
@@ -184,11 +169,6 @@ def main():
         for ep in p.glob("*"):
             if not ep.is_dir():
                 continue
-            # Delete shift-augmented directories (created by tokenize script)
-            if shift_re.search(ep.name):
-                shutil.rmtree(ep)
-                continue
-            # Delete tokens.npy from base episodes (will be re-created after FSQ)
             tok = ep / "tokens.npy"
             if tok.exists():
                 tok.unlink()
@@ -200,7 +180,6 @@ def main():
             all_episodes.extend(
                 ep for ep in sorted(p.glob("*"))
                 if ep.is_dir() and (ep / "frames.npy").exists()
-                and not shift_re.search(ep.name)
             )
 
     train_eps = [ep for ep in all_episodes if not is_val_episode(ep.name, val_set)]
@@ -261,7 +240,7 @@ def main():
             t0 = time.time()
             train_recon, train_slow, train_uniform = train_epoch(
                 model, train_loader, optimizer, args.alpha_slow, args.alpha_uniform,
-                scaler=scaler, amp_dtype=amp_dtype, augment=True)
+                scaler=scaler, amp_dtype=amp_dtype)
             val_recon = val_epoch(model, val_loader, amp_dtype=amp_dtype)
             scheduler.step()
             dt = time.time() - t0

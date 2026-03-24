@@ -41,23 +41,21 @@ export PATH="$HOME/.local/bin:$PATH"
 pip install --user wandb 2>/dev/null
 
 # Tokenization is idempotent (skips already-tokenized episodes)
-echo "=== Step 1a: Tokenize death episodes (with shift augmentation) ==="
+echo "=== Step 1a: Tokenize death episodes ==="
 python -u scripts/tokenize_episodes.py \
     --model fsq \
     --checkpoint checkpoints/fsq_best.pt \
     --episodes-dir data/death_episodes \
     --batch-size 512 \
-    --levels 8 5 5 5 \
-    --shifts-v -4 -2 0 2 4
+    --levels 8 5 5 5
 
-echo "=== Step 1b: Tokenize expert episodes (with shift augmentation) ==="
+echo "=== Step 1b: Tokenize expert episodes ==="
 python -u scripts/tokenize_episodes.py \
     --model fsq \
     --checkpoint checkpoints/fsq_best.pt \
     --episodes-dir data/expert_episodes \
     --batch-size 512 \
-    --levels 8 5 5 5 \
-    --shifts-v -4 -2 0 2 4
+    --levels 8 5 5 5
 
 RESUME_ARG=""
 if [ -f "$RESUME_FLAG" ]; then
