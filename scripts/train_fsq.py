@@ -32,24 +32,27 @@ class FramePairDataset(Dataset):
 
     def __init__(self, episode_dirs, device=None):
         self.device = device
-        # Build index: (episode_path, frame_idx) for each pair
-        self.index = []
-        self.mmaps = {}
+        # Group frame pairs by episode file, store as contiguous arrays
+        all_ft, all_ft1 = [], []
         for ep_dir in episode_dirs:
-            fp = ep_dir / "frames.npy"
-            frames = np.load(fp, mmap_mode='r')
-            self.mmaps[str(fp)] = frames
-            for i in range(len(frames) - 1):
-                self.index.append((str(fp), i))
+            frames = np.load(ep_dir / "frames.npy")  # (T, 64, 64) uint8
+            if len(frames) < 2:
+                continue
+            all_ft.append(frames[:-1])
+            all_ft1.append(frames[1:])
+        # Single contiguous array in RAM (uint8, ~1 byte/pixel)
+        self.ft = np.concatenate(all_ft)    # (N, 64, 64) uint8
+        self.ft1 = np.concatenate(all_ft1)  # (N, 64, 64) uint8
+        del all_ft, all_ft1
+        print(f"  Dataset: {len(self.ft):,} frame pairs "
+              f"({self.ft.nbytes / 1e9:.1f} GB RAM)")
 
     def __len__(self):
-        return len(self.index)
+        return len(self.ft)
 
     def __getitem__(self, idx):
-        fp, i = self.index[idx]
-        frames = self.mmaps[fp]
-        ft = torch.from_numpy(frames[i].copy()).float().unsqueeze(0) / 255.0
-        ft1 = torch.from_numpy(frames[i + 1].copy()).float().unsqueeze(0) / 255.0
+        ft = torch.from_numpy(self.ft[idx].copy()).float().unsqueeze(0) / 255.0
+        ft1 = torch.from_numpy(self.ft1[idx].copy()).float().unsqueeze(0) / 255.0
         return ft, ft1
 
 
