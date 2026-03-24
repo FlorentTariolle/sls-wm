@@ -38,7 +38,7 @@ trap handle_timeout USR1
 module purge
 module load aidl/pytorch/2.6.0-cuda12.6
 export PATH="$HOME/.local/bin:$PATH"
-export PYTHONPATH="$HOME/.local/lib/python3.9/site-packages:$PYTHONPATH"
+pip install --user wandb 2>/dev/null
 
 # Tokenization is idempotent (skips already-tokenized episodes)
 echo "=== Step 1a: Tokenize death episodes (with shift augmentation) ==="
