@@ -17,6 +17,8 @@
 
 module purge
 module load aidl/pytorch/2.6.0-cuda12.6
+export PATH="$HOME/.local/bin:$PATH"
+export PYTHONPATH="$HOME/.local/lib/python3.9/site-packages:$PYTHONPATH"
 
 echo "=== Train Controller (BC) ==="
 python -u scripts/train_controller_bc.py \

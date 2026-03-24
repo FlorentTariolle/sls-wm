@@ -21,6 +21,8 @@ trap cleanup_and_resubmit USR1
 
 module purge
 module load aidl/pytorch/2.6.0-cuda12.6
+export PATH="$HOME/.local/bin:$PATH"
+export PYTHONPATH="$HOME/.local/lib/python3.9/site-packages:$PYTHONPATH"
 
 echo "=== Train Controller (PPO, constant LR, auto-resume) ==="
 echo "$(date): Starting on $(hostname), Job ID: $SLURM_JOB_ID"
