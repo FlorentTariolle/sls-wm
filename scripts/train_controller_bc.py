@@ -21,6 +21,7 @@ import torch
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
 from deepdash.world_model import WorldModel
 from deepdash.controller import CNNPolicy
 
@@ -139,6 +140,8 @@ def main():
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     with open(ckpt_dir / "controller_bc_args.json", "w") as f:
         json.dump(vars(args), f, indent=2)
+
+    wandb_init(project="deepdash", name="bc", config=vars(args))
 
     # Load world model (frozen, for h_t extraction only)
     wm = WorldModel(
@@ -311,6 +314,13 @@ def main():
             f"{lr:.1e}", f"{dt:.1f}"])
         log_file.flush()
 
+        wandb_log({
+            "epoch": epoch,
+            "train/loss": train_loss, "train/acc": train_acc,
+            "val/loss": val_loss, "val/acc": val_acc,
+            "lr": lr,
+        })
+
         # Save best + early stopping
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -324,6 +334,7 @@ def main():
                 break
 
     log_file.close()
+    wandb_finish()
     torch.save(controller.state_dict(), ckpt_dir / "controller_bc_final.pt")
     print(f"\nDone. Best val loss: {best_val_loss:.4f}")
     print(f"Checkpoints: {ckpt_dir}/controller_bc_best.pt")

@@ -347,8 +347,8 @@ def main():
     parser.add_argument("--expert-episodes-dir", default="data/expert_episodes",
                         help="Directory with expert episodes (no death on last frame)")
     parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=256)
-    parser.add_argument("--lr", type=float, default=1e-3)
+    parser.add_argument("--batch-size", type=int, default=512)
+    parser.add_argument("--lr", type=float, default=2e-3)
     parser.add_argument("--context-frames", type=int, default=4)
     parser.add_argument("--vocab-size", type=int, default=1000,
                         help="Tokenizer vocabulary size (1000 for FSQ, 1024 for VQ-VAE)")
@@ -363,7 +363,7 @@ def main():
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--patience", type=int, default=30)
-    parser.add_argument("--cpc-weight", type=float, default=0.1)
+    parser.add_argument("--cpc-weight", type=float, default=1.0)
     parser.add_argument("--token-noise", type=float, default=0.05,
                         help="Random token replacement noise rate")
     parser.add_argument("--fsq-noise", type=float, default=0.05,
@@ -376,7 +376,7 @@ def main():
                         help="Gaussian kernel width for structured label smoothing (0 = uniform)")
     parser.add_argument("--focal-gamma", type=float, default=2.0,
                         help="Focal loss gamma (0 = standard CE)")
-    parser.add_argument("--death-oversample", type=int, default=15,
+    parser.add_argument("--death-oversample", type=int, default=5,
                         help="Repeat death-frame samples this many times (1 = no oversampling)")
     parser.add_argument("--steps-per-epoch", type=int, default=0,
                         help="Cap training steps per epoch (0 = full dataset)")
