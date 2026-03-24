@@ -454,12 +454,14 @@ class WorldModel(nn.Module):
 
         # --- Phase 2: Parallel decode (all tokens in one forward pass) ---
         target_embed = self.mask_embed.expand(B, n_tokens, -1)
-        target_rope_cos = self.rope_cos[ctx_len:ctx_len + n_tokens]
-        target_rope_sin = self.rope_sin[ctx_len:ctx_len + n_tokens]
+        # Full rope covers all key positions (ctx + target) so that
+        # un-rotated cached keys get correct RoPE applied at attention time.
+        full_rope_cos = self.rope_cos[:ctx_len + n_tokens]
+        full_rope_sin = self.rope_sin[:ctx_len + n_tokens]
 
         h = target_embed
         for i, block in enumerate(self.blocks):
-            h, _ = block(h, None, target_rope_cos, target_rope_sin,
+            h, _ = block(h, None, full_rope_cos, full_rope_sin,
                          past_kv=context_kvs[i], use_cache=False)
         h = self.ln_f(h)
         logits = self.head(h)  # (B, 65, vocab)
@@ -509,15 +511,21 @@ class TransformerBlock(nn.Module):
         qkv = self.qkv(h).reshape(B, T, 3, self.n_heads, self.head_dim)
         q, k, v = qkv.permute(2, 0, 3, 1, 4)
 
-        q = apply_rope(q, rope_cos, rope_sin)
-        k = apply_rope(k, rope_cos, rope_sin)
+        # Cache raw (un-rotated) K/V so RoPE can be recomputed for
+        # shifted positions when the context window slides.
+        present_kv = (k, v) if use_cache else None
 
         if past_kv is not None:
             past_k, past_v = past_kv
             k = torch.cat([past_k, k], dim=2)
             v = torch.cat([past_v, v], dim=2)
-
-        present_kv = (k, v) if use_cache else None
+            # rope_cos/sin must cover all key positions (past + current).
+            # Q uses only the last T positions (current queries).
+            q = apply_rope(q, rope_cos[-T:], rope_sin[-T:])
+            k = apply_rope(k, rope_cos, rope_sin)
+        else:
+            q = apply_rope(q, rope_cos, rope_sin)
+            k = apply_rope(k, rope_cos, rope_sin)
 
         # SDPA expects bool mask where True = attend (opposite of ours)
         if attn_mask is not None:
