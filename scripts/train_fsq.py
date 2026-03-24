@@ -191,9 +191,9 @@ def main():
     print(f"Frame pairs: {len(train_dataset)} train, {len(val_dataset)} val")
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size,
-                              shuffle=True, num_workers=0, pin_memory=False)
+                              shuffle=True, num_workers=4, pin_memory=True)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size,
-                            shuffle=False, num_workers=0, pin_memory=False)
+                            shuffle=False, num_workers=4, pin_memory=True)
 
     model = FSQVAE(levels=args.levels).to(device)
     if args.resume:
