@@ -11,7 +11,7 @@
 
 \graphicspath{{../docs/}{../}{./figures/}}
 
-\definecolor{insared}{HTML}{CC2B1E}
+\definecolor{insared}{HTML}{E51F13}
 \definecolor{vcolor}{HTML}{2E86AB}
 \definecolor{mcolor}{HTML}{E8871E}
 \definecolor{ccolor}{HTML}{7FB069}
@@ -79,9 +79,10 @@
 
     \draw[arr] (input) -- (V);
     \draw[arr] (V) -- node[above, lbl] {$\mathbf{z}_t$} node[below, lbl] {\tiny 8$\times$8} (M);
-    \draw[arr] (M) -- node[above, lbl] {$\mathbf{h}_t$} node[below, lbl] {\tiny 256} (C);
+    \draw[arr] (M) -- node[above, lbl] {$\mathbf{h}_t$} node[below, lbl] {\tiny 384} (C);
     \draw[arr] (C) -- (output);
 
+    \draw[arr] (V.north) -- ++(0,0.5) -| node[above, lbl, pos=0.25] {$\mathbf{z}_t$} (C.north);
     \draw[arr] (C.south) -- ++(0,-0.6) -| node[below, lbl, pos=0.25] {$a_t$} (M.south);
   \end{tikzpicture}%
   }
@@ -92,7 +93,7 @@
     \small
     $\mathbf{x}_t \in \mathbb{R}^{64 \times 64}$: grayscale Sobel frame \quad\quad
     $\mathbf{z}_t \in \{0,\ldots,999\}^{64}$: discrete tokens \\[0.3em]
-    $\mathbf{h}_t \in \mathbb{R}^{256}$: hidden state \quad\quad
+    $\mathbf{h}_t \in \mathbb{R}^{384}$: hidden state \quad\quad
     $a_t \in \{0, 1\}$: jump/idle
   \end{center}
 \end{frame}
@@ -116,7 +117,7 @@
   \begin{itemize}
     \item Live gameplay at \textbf{30 FPS}, death detection via process memory reading
     \item Frames + actions recorded simultaneously, saved as \texttt{.npy} per episode
-    \item \textbf{Death episodes}: $\sim$3,600 episodes, $\sim$180K frames (intentional deaths at obstacles)
+    \item \textbf{Death episodes}: $\sim$4,200 episodes, $\sim$219K frames (intentional deaths at obstacles)
     \item \textbf{Expert episodes}: $\sim$36 clean runs, $\sim$33K frames (no deaths, for BC + rebalancing world model)
   \end{itemize}
 \end{frame}
@@ -238,7 +239,7 @@
 
 \begin{frame}{FSQ-VAE: Training}
   \begin{itemize}
-    \item $\sim$180K frames, batch 2048
+    \item $\sim$252K frames, batch 2048
     \item GRWM regularization (temporal slowness + uniformity)
     \item $\pm$4px random shift augmentation (edge padding)
     \item Cosine LR schedule, 200 epochs
@@ -356,7 +357,7 @@
   \end{center}
 
   \begin{itemize}
-    \item 5 vertical shifts $\times$ 3,582 episodes $=$ \textbf{17,910 augmented episodes}
+    \item 5 vertical shifts $\times$ 4,264 episodes $=$ \textbf{21,320 augmented episodes}
     \item Vertical shifts simulate different jump heights (physically valid)
     \item Horizontal shifts removed: player X position is fixed in Geometry Dash
     \item Edge padding (same as FSQ-VAE training)
@@ -566,7 +567,8 @@
 % ==========================================================
 
 \begin{frame}{Inference: Assembling the Pipeline}
-  At inference, the prediction head is pruned. Only $\mathbf{h}_t$ matters.
+  \vspace{0.5em}
+  At inference, the prediction head is pruned. C receives $\mathbf{z}_t$ and $\mathbf{h}_t$.
 
   \vspace{0.5em}
   \begin{center}
@@ -578,23 +580,23 @@
     ghost/.style={rectangle, draw=gray!40, fill=gray!5, rounded corners, minimum height=0.8cm, align=center, font=\scriptsize, dashed},
   ]
     \node[block, fill=gray!10, draw=gray, minimum width=1.6cm] (pre) {Sobel\\$\downarrow$ 64$\times$64};
-    \node[block, fill=vcolor!20, draw=vcolor, right=0.6cm of pre, minimum width=1.6cm] (enc) {\textbf{V}};
-    \node[block, fill=mcolor!20, draw=mcolor, right=0.6cm of enc, minimum width=1.6cm] (tfm) {\textbf{M}};
-    \node[block, fill=ccolor!20, draw=ccolor, right=0.6cm of tfm, minimum width=1.6cm] (ctrl) {\textbf{C}};
-    \node[lbl, right=0.8cm of ctrl] (act) {$a_t$};
+    \node[block, fill=vcolor!20, draw=vcolor, right=1.2cm of pre, minimum width=1.6cm] (enc) {\textbf{V}};
+    \node[block, fill=mcolor!20, draw=mcolor, right=1.2cm of enc, minimum width=1.6cm] (tfm) {\textbf{M}};
+    \node[block, fill=ccolor!20, draw=ccolor, right=1.2cm of tfm, minimum width=1.6cm] (ctrl) {\textbf{C}};
+    \node[lbl, right=1.6cm of ctrl] (act) {$a_t$};
 
-    \node[ghost, above=0.4cm of tfm] (pred) {Pred. Head\\{\tiny pruned}};
+    \node[ghost, above=0.3cm of tfm] (pred) {Pred. Head\\{\tiny pruned}};
     \draw[gray!40, dashed] (tfm) -- (pred);
 
     \draw[arr] (pre) -- node[above, lbl] {$\mathbf{x}_t$} (enc);
     \draw[arr] (enc) -- node[above, lbl] {$\mathbf{z}_t$} (tfm);
     \draw[arr] (tfm) -- node[above, lbl] {$\mathbf{h}_t$} (ctrl);
     \draw[arr] (ctrl) -- (act);
+    \draw[arr] (enc.south) -- ++(0,-0.5) -| node[below, lbl, pos=0.25] {$\mathbf{z}_t$} (ctrl.south);
   \end{tikzpicture}%
   }
   \end{center}
 
-  \vspace{0.5em}
   \begin{center}
     \small
     Screen capture at 30 FPS $\to$ Sobel $\to$ V $\to$ M $\to$ C $\to$ game input \\[0.3em]
@@ -644,6 +646,7 @@
 \end{frame}
 
 \begin{frame}{What Didn't Work (or Didn't Help)}
+  \vspace{0.5em}
   \begin{itemize}
     \item \textbf{$\beta$-VAE}: fundamentally blurry. Wide range of hyperparameter search before switching to VQ/FSQ
     \item \textbf{LR $10^{-3}$ without augmentation}: 13.5pp train/val gap at epoch 29, model memorizing
@@ -651,7 +654,6 @@
     \item \textbf{Pure RL controller}: CMA-ES converged to $\sim$12 steps (local optimum). BC pretraining required
     \item \textbf{Death-only training data}: 15$\times$ death oversample caused memorization (44pp precision gap). Fixed: 5$\times$ + expert episodes
     \item \textbf{MaskGIT iterative decoding}: degraded dream quality on 64-token grid. Parallel single-step worked better (bidirectional attention sufficient)
-    \item \textbf{torch.compile on full model}: 23+ min compilation. Solved by compiling backbone only
   \end{itemize}
 \end{frame}
 
