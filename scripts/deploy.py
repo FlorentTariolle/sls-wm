@@ -245,17 +245,36 @@ def main():
     controller.eval()
 
     # Optimize inference
+    use_cuda_graph = False
     if device.type == "cuda":
         torch.backends.cudnn.benchmark = True
-        if sys.platform != "win32":
-            try:
-                vae.encode = torch.compile(vae.encode)
-                wm.encode_context = torch.compile(wm.encode_context)
-                print("torch.compile enabled")
-            except Exception as e:
-                print(f"torch.compile not available: {e}")
-        else:
-            print("Skipping torch.compile (Windows)")
+        try:
+            vae.encode = torch.compile(vae.encode)
+            print("torch.compile enabled for FSQ")
+        except Exception as e:
+            print(f"torch.compile not available: {e}")
+
+        # CUDA Graph for encode_context: records all kernels once,
+        # replays with a single CPU call (zero per-op launch overhead).
+        try:
+            graph_ctx_t = torch.zeros(1, K, 65, dtype=torch.long, device=device)
+            graph_ctx_a = torch.zeros(1, K, dtype=torch.long, device=device)
+
+            # Warmup runs (CUDA needs to see the kernels before capture)
+            with torch.no_grad(), torch.amp.autocast("cuda"):
+                for _ in range(3):
+                    wm.encode_context(graph_ctx_t, graph_ctx_a)
+            torch.cuda.synchronize()
+
+            encode_graph = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(encode_graph):
+                with torch.no_grad(), torch.amp.autocast("cuda"):
+                    graph_h_t = wm.encode_context(graph_ctx_t, graph_ctx_a)
+
+            use_cuda_graph = True
+            print("CUDA Graph captured for encode_context")
+        except Exception as e:
+            print(f"CUDA Graph capture failed, using eager: {e}")
 
     kv_status = "ON" if args.use_kv_cache else "OFF"
     print(f"All models loaded. KV cache: {kv_status}\n")
@@ -269,10 +288,19 @@ def main():
     # --- State ---
     active = False
     jumping = False
-    ctx_tokens = []  # list of (64,) int64 arrays
-    ctx_actions = []  # list of int actions
+    # Ring buffer on GPU: avoids GPU->CPU->GPU round-trip each frame
+    ctx_tokens = torch.zeros(K, 64, dtype=torch.long, device=device)
+    ctx_actions = torch.zeros(K, dtype=torch.long, device=device)
+    ctx_fill = 0  # how many frames stored so far
+    ctx_status = torch.full((K, 1), wm.ALIVE_TOKEN, dtype=torch.long, device=device)
     frame_count = 0
     kv_cache = None   # sliding KV cache (list of (k,v) per layer)
+
+    # Pinned memory buffer for CPU->GPU frame transfer (skips implicit staging copy)
+    if device.type == "cuda":
+        pin_buf = torch.zeros(1, 1, 64, 64, dtype=torch.float32, pin_memory=True)
+    else:
+        pin_buf = None
 
     print("Controls:")
     print("  F5  -- toggle agent on/off")
@@ -286,8 +314,9 @@ def main():
         if keyboard.is_pressed("f5"):
             active = not active
             if active:
-                ctx_tokens = []
-                ctx_actions = []
+                ctx_tokens.zero_()
+                ctx_actions.zero_()
+                ctx_fill = 0
                 frame_count = 0
                 kv_cache = None
                 if jumping:
@@ -324,56 +353,62 @@ def main():
                 time.sleep(frame_interval - elapsed)
             continue
 
-        # --- FSQ encode ---
+        # --- FSQ encode (stays on GPU) ---
         t1 = time.perf_counter()
         with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-            frame_t = torch.from_numpy(edge_frame.astype(np.float32) / 255.0)
-            frame_t = frame_t.unsqueeze(0).unsqueeze(0).to(device)  # (1, 1, 64, 64)
-            tokens = vae.encode(frame_t)  # (1, 8, 8)
-            tokens_flat = tokens.reshape(64).cpu().numpy().astype(np.int64)
+            if pin_buf is not None:
+                pin_buf[0, 0] = torch.from_numpy(edge_frame.astype(np.float32) * (1.0 / 255.0))
+                frame_t = pin_buf.to(device, non_blocking=True)
+            else:
+                frame_t = torch.from_numpy(edge_frame.astype(np.float32) * (1.0 / 255.0))
+                frame_t = frame_t.unsqueeze(0).unsqueeze(0).to(device)
+            tokens = vae.encode(frame_t).reshape(64)  # (64,) on GPU
         t_fsq = time.perf_counter() - t1
 
-        # --- Update context buffer ---
-        ctx_tokens.append(tokens_flat)
-        ctx_actions.append(1 if jumping else 0)
+        # --- Update context ring buffer (all on GPU) ---
+        if ctx_fill < K:
+            ctx_tokens[ctx_fill] = tokens
+            ctx_actions[ctx_fill] = 1 if jumping else 0
+            ctx_fill += 1
+        else:
+            ctx_tokens[:-1] = ctx_tokens[1:].clone()
+            ctx_actions[:-1] = ctx_actions[1:].clone()
+            ctx_tokens[-1] = tokens
+            ctx_actions[-1] = 1 if jumping else 0
         frame_count += 1
 
-        # Keep only last K frames
-        if len(ctx_tokens) > K:
-            ctx_tokens = ctx_tokens[-K:]
-            ctx_actions = ctx_actions[-K:]
-
         # --- Warmup: need K frames before acting ---
-        if len(ctx_tokens) < K:
-            print(f"  Warmup: {len(ctx_tokens)}/{K} frames")
+        if ctx_fill < K:
+            print(f"  Warmup: {ctx_fill}/{K} frames")
             elapsed = time.perf_counter() - t0
             if elapsed < frame_interval:
                 time.sleep(frame_interval - elapsed)
             continue
 
-        # --- Transformer: get h_t ---
+        # --- Transformer: get h_t (all on GPU, no CPU round-trip) ---
         t1 = time.perf_counter()
-        with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
-            ctx_tok_np = np.array(ctx_tokens)  # (K, 64)
-            ctx_act_np = np.array(ctx_actions)  # (K,)
-            status = np.full((K, 1), wm.ALIVE_TOKEN, dtype=np.int64)
-            ctx_with_status = np.concatenate([ctx_tok_np, status], axis=1)
+        if use_cuda_graph:
+            ctx_t = torch.cat([ctx_tokens, ctx_status], dim=1).unsqueeze(0)
+            graph_ctx_t.copy_(ctx_t)
+            graph_ctx_a.copy_(ctx_actions.unsqueeze(0))
+            encode_graph.replay()
+            h_t = graph_h_t
+        else:
+            with torch.no_grad(), torch.amp.autocast("cuda", enabled=device.type == "cuda"):
+                ctx_t = torch.cat([ctx_tokens, ctx_status], dim=1).unsqueeze(0)
+                ctx_a = ctx_actions.unsqueeze(0)
 
-            ctx_t = torch.from_numpy(ctx_with_status[None]).to(device)
-            ctx_a = torch.from_numpy(ctx_act_np[None]).to(device)
-
-            if args.use_kv_cache:
-                h_t, kv_cache = encode_context_cached(
-                    wm, ctx_t, ctx_a, kv_cache)
-            else:
-                h_t = wm.encode_context(ctx_t, ctx_a)  # (1, embed_dim)
+                if args.use_kv_cache:
+                    h_t, kv_cache = encode_context_cached(
+                        wm, ctx_t, ctx_a, kv_cache)
+                else:
+                    h_t = wm.encode_context(ctx_t, ctx_a)
         t_tfm = time.perf_counter() - t1
 
         # --- Controller: decide action ---
         t1 = time.perf_counter()
         with torch.no_grad():
-            current_tokens = torch.from_numpy(tokens_flat).unsqueeze(0).to(device)
-            prob, _ = controller(current_tokens, h_t.float())
+            prob, _ = controller(tokens.unsqueeze(0), h_t.float())
             jump = prob[0].item() > args.jump_threshold
         t_ctrl = time.perf_counter() - t1
 
