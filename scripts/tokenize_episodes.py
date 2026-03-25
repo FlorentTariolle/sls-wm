@@ -41,6 +41,8 @@ def main():
     parser.add_argument("--embedding-dim", type=int, default=8)
     # FSQ specific
     parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
+    parser.add_argument("--no-shift-check", action="store_true",
+                        help="Skip shift directory verification (for local testing)")
     args = parser.parse_args()
 
     if args.checkpoint is None:
@@ -70,14 +72,15 @@ def main():
     shift_re = re.compile(r"_s[+-]\d+_[+-]\d+$")
 
     # Verify shift directories exist (created by shift_episodes.py)
-    has_shifts = any(
-        ep.is_dir() and shift_re.search(ep.name)
-        for ep in episodes_dir.glob("*")
-    )
-    if not has_shifts:
-        print("ERROR: No shift augmentation found. "
-              "Run scripts/shift_episodes.py first.")
-        sys.exit(1)
+    if not args.no_shift_check:
+        has_shifts = any(
+            ep.is_dir() and shift_re.search(ep.name)
+            for ep in episodes_dir.glob("*")
+        )
+        if not has_shifts:
+            print("ERROR: No shift augmentation found. "
+                  "Run scripts/shift_episodes.py first.")
+            sys.exit(1)
 
     # Tokenize all episodes (base + pre-shifted)
     episodes = sorted(ep for ep in episodes_dir.glob("*")
