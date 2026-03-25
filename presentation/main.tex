@@ -124,6 +124,37 @@
   \end{itemize}
 \end{frame}
 
+\begin{frame}{Data Augmentation: Spatial Shifts}
+  \textbf{Problem}: $\sim$252K frames is limited data $\Rightarrow$ overfitting risk
+
+  \vspace{0.3em}
+  \textbf{Solution}: apply vertical pixel shifts at the dataset level, used across all training phases
+
+  \begin{center}
+  \resizebox{0.85\textwidth}{!}{%
+  \begin{tikzpicture}[
+    block/.style={rectangle, draw=vcolor, fill=vcolor!15, rounded corners, minimum height=0.8cm, align=center, font=\scriptsize, line width=0.6pt},
+    arr/.style={-{Stealth[length=2.5mm]}, thick},
+    lbl/.style={font=\tiny, align=center},
+  ]
+    \node[block] (frame) {$\mathbf{x}_t$};
+    \node[block, right=0.8cm of frame] (shift) {Vertical shift\\$\{-4,-2,0,2,4\}$};
+    \node[block, right=0.8cm of shift] (out) {$\mathbf{x}'_t$};
+
+    \draw[arr] (frame) -- (shift);
+    \draw[arr] (shift) -- (out);
+  \end{tikzpicture}%
+  }
+  \end{center}
+
+  \begin{itemize}
+    \item 5 vertical shifts $\times$ 4,264 episodes $=$ \textbf{21,320 augmented episodes}
+    \item Vertical shifts simulate different stage elevations (identical dynamics, physically valid)
+    \item Horizontal shifts removed: player X position is fixed in Geometry Dash
+    \item Edge padding to fill shifted borders
+  \end{itemize}
+\end{frame}
+
 % ==========================================================
 \section{Phase 1: V (FSQ-VAE)}
 % ==========================================================
@@ -356,39 +387,6 @@
   \end{center}
 \end{frame}
 
-\begin{frame}{Training: Spatial Shift Augmentation}
-  \textbf{Problem}: 4,200+ episodes is limited data for 14.7M params $\Rightarrow$ overfitting
-
-  \vspace{0.3em}
-  \textbf{Solution}: re-encode frames through frozen FSQ-VAE at pixel offsets
-
-  \begin{center}
-  \resizebox{0.85\textwidth}{!}{%
-  \begin{tikzpicture}[
-    block/.style={rectangle, draw=vcolor, fill=vcolor!15, rounded corners, minimum height=0.8cm, align=center, font=\scriptsize, line width=0.6pt},
-    arr/.style={-{Stealth[length=2.5mm]}, thick},
-    lbl/.style={font=\tiny, align=center},
-  ]
-    \node[block] (frame) {$\mathbf{x}_t$};
-    \node[block, right=0.8cm of frame] (shift) {Vertical shift\\$\{-4,-2,0,2,4\}$};
-    \node[block, right=0.8cm of shift] (enc) {V (frozen)};
-    \node[block, right=0.8cm of enc] (tok) {$\mathbf{z}'_t \neq \mathbf{z}_t$};
-
-    \draw[arr] (frame) -- (shift);
-    \draw[arr] (shift) -- (enc);
-    \draw[arr] (enc) -- (tok);
-  \end{tikzpicture}%
-  }
-  \end{center}
-
-  \begin{itemize}
-    \item 5 vertical shifts $\times$ 4,264 episodes $=$ \textbf{21,320 augmented episodes}
-    \item Vertical shifts simulate different jump heights (physically valid)
-    \item Horizontal shifts removed: player X position is fixed in Geometry Dash
-    \item Edge padding (same as FSQ-VAE training)
-  \end{itemize}
-\end{frame}
-
 \begin{frame}{Training: Dual Token Noise}
   \vspace{0.5em}
   \begin{columns}[T]
@@ -618,7 +616,12 @@
     \draw[arr] (enc) -- node[above, lbl] {$\mathbf{z}_t$} (tfm);
     \draw[arr] (tfm) -- node[above, lbl] {$\mathbf{h}_t$} (ctrl);
     \draw[arr] (ctrl) -- (act);
-    \draw[arr] (enc.south) -- ++(0,-0.5) -| node[below, lbl, pos=0.25] {$\mathbf{z}_t$} (ctrl.south);
+    
+    % z_t routed lower and shifted right on C to clear space
+    \draw[arr] (enc.south) -- ++(0,-0.8) -| node[below, lbl, pos=0.25] {$\mathbf{z}_t$} ([xshift=0.2cm]ctrl.south);
+    
+    % a_t routed higher and shifted left on C to avoid intersection entirely
+    \draw[arr] ([xshift=-0.2cm]ctrl.south) -- ++(0,-0.4) -| node[below, lbl, pos=0.25] {$a_t$} ([xshift=0.2cm]tfm.south);
   \end{tikzpicture}%
   }
   \end{center}
@@ -628,33 +631,6 @@
     Screen capture at 30 FPS $\to$ Sobel $\to$ V $\to$ M $\to$ C $\to$ game input \\[0.3em]
     Full pipeline must complete in $<$33ms to maintain 30 FPS real-time play
   \end{center}
-\end{frame}
-
-\begin{frame}{Deployment: Real-Time at 30 FPS}
-  \begin{center}
-    \small
-    \begin{tabular}{lcc}
-      \toprule
-      Stage & Time (ms) & \% Budget \\
-      \midrule
-      Screen capture & 2.5 & 9\% \\
-      Sobel preprocessing & 9.0 & 33\% \\
-      FSQ encoding & 4.5 & 16\% \\
-      Transformer ($\mathbf{h}_t$) & 9.0 & 33\% \\
-      Controller & 1.5 & 5\% \\
-      \midrule
-      \textbf{Total} & \textbf{26.5} & -- \\
-      \textbf{Budget (30 FPS)} & \textbf{33.3} & -- \\
-      \bottomrule
-    \end{tabular}
-  \end{center}
-
-  \vspace{0.5em}
-  \begin{itemize}
-    \item First known World Models agent deployed on a real game via screen capture at 30 FPS
-    \item Agent dodges simple obstacles (single/double spikes)
-    \item Struggles with complex obstacle sequences (jumps too early/often)
-  \end{itemize}
 \end{frame}
 
 % ==========================================================
