@@ -41,6 +41,8 @@ def main():
     parser.add_argument("--embedding-dim", type=int, default=8)
     parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--codebook-stats", action="store_true",
+                        help="Compute codebook utilization: active codes, perplexity, histogram")
     args = parser.parse_args()
 
     if args.checkpoint is None:
@@ -89,6 +91,33 @@ def main():
     if len(data) == 0:
         print("No frames found")
         return
+
+    if args.codebook_stats:
+        codebook_size = model_best.codebook_size
+        all_indices = []
+        batch_size = 256
+        with torch.no_grad():
+            for i in range(0, len(data), batch_size):
+                batch = torch.from_numpy(
+                    data[i:i + batch_size].astype(np.float32) / 255.0
+                ).unsqueeze(1).to(device)
+                idx = model_best.encode(batch)  # (B, 8, 8)
+                all_indices.append(idx.cpu().flatten())
+        all_indices = torch.cat(all_indices)
+
+        counts = torch.bincount(all_indices, minlength=codebook_size).float()
+        active = (counts > 0).sum().item()
+        probs = counts / counts.sum()
+        entropy = -(probs[probs > 0] * probs[probs > 0].log()).sum()
+        perplexity = entropy.exp().item()
+
+        print(f"\nCodebook utilization ({args.split} split, {len(all_indices):,} tokens):")
+        print(f"  Codebook size : {codebook_size}")
+        print(f"  Active codes  : {active} / {codebook_size} ({100 * active / codebook_size:.1f}%)")
+        print(f"  Perplexity    : {perplexity:.1f} / {codebook_size} ({100 * perplexity / codebook_size:.1f}%)")
+        sorted_counts, sorted_idx = counts.sort(descending=True)
+        top5 = [(sorted_idx[i].item(), sorted_counts[i].int().item()) for i in range(5)]
+        print(f"  Top-5 codes   : {top5}")
 
     import random
     random.seed(args.seed)
