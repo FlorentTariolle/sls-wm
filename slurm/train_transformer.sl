@@ -70,7 +70,7 @@ python -u scripts/train_transformer.py \
     --expert-episodes-dir data/expert_episodes \
     --epochs 200 \
     --batch-size 512 \
-    --lr 2e-3 \
+    --lr 4e-3 \
     --context-frames 4 \
     --vocab-size 1000 \
     --tokens-per-frame 64 \
@@ -85,10 +85,10 @@ python -u scripts/train_transformer.py \
     --label-smoothing 0.1 \
     --fsq-sigma 0.9 \
     --focal-gamma 2.0 \
-    --death-oversample 5 \
+    --death-oversample 4 \
     --steps-per-epoch 500 \
     --checkpoint-dir checkpoints \
-    --patience 30 \
+    --patience 60 \
     --seed 42 \
     $RESUME_ARG &
 

@@ -348,7 +348,8 @@ def main():
                         help="Directory with expert episodes (no death on last frame)")
     parser.add_argument("--epochs", type=int, default=200)
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=2e-3)
+    parser.add_argument("--lr", type=float, default=4e-3)
+    parser.add_argument("--lr-min", type=float, default=5e-4)
     parser.add_argument("--context-frames", type=int, default=4)
     parser.add_argument("--vocab-size", type=int, default=1000,
                         help="Tokenizer vocabulary size (1000 for FSQ, 1024 for VQ-VAE)")
@@ -574,7 +575,7 @@ def main():
     warmup_scheduler = torch.optim.lr_scheduler.LinearLR(
         optimizer, start_factor=1e-2, total_iters=warmup_epochs)
     cosine_scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=args.epochs - warmup_epochs, eta_min=1e-4)
+        optimizer, T_max=args.epochs - warmup_epochs, eta_min=args.lr_min)
     scheduler = torch.optim.lr_scheduler.SequentialLR(
         optimizer, [warmup_scheduler, cosine_scheduler],
         milestones=[warmup_epochs],
@@ -665,10 +666,12 @@ def main():
 
             wandb_log({
                 "epoch": epoch,
-                "train/loss": train_loss, "train/acc": train_acc,
-                "train/death_f1": train_d_f1, "train/cpc": train_cpc,
-                "val/loss": val_loss, "val/acc": val_acc,
-                "val/death_f1": val_d_f1, "val/cpc": val_cpc,
+                "train/total": train_total, "train/loss": train_loss,
+                "train/acc": train_acc, "train/death_f1": train_d_f1,
+                "train/cpc": train_cpc,
+                "val/total": val_total, "val/loss": val_loss,
+                "val/acc": val_acc, "val/death_f1": val_d_f1,
+                "val/cpc": val_cpc,
                 "gap": gap, "lr": lr,
             })
 
