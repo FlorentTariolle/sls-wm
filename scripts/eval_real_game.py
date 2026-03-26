@@ -107,7 +107,7 @@ def main():
     wm.load_state_dict(state)
     wm.eval()
 
-    controller = CNNPolicy(vocab_size=args.vocab_size).to(device)
+    controller = CNNPolicy(vocab_size=args.vocab_size, h_dim=args.embed_dim).to(device)
     state = torch.load(args.controller_checkpoint, map_location=device,
                        weights_only=True)
     controller.load_state_dict(state)

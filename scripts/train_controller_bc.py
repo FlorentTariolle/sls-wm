@@ -222,7 +222,7 @@ def main():
     print(f"Jump class weight: {pos_weight.item():.2f}x (data ratio: {(1-jump_ratio)/jump_ratio:.2f}x)")
 
     # Initialize controller
-    controller = CNNPolicy(vocab_size=args.vocab_size).to(device)
+    controller = CNNPolicy(vocab_size=args.vocab_size, h_dim=args.embed_dim).to(device)
     optimizer = torch.optim.AdamW(controller.parameters(),
                                   lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
