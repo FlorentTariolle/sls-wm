@@ -20,7 +20,7 @@ import numpy as np
 import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
+from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish, wandb_run_id
 import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -531,6 +531,7 @@ def main():
     # Resume: load latest checkpoint, optimizer state, and find start iteration
     start_iteration = 1
     best_eval = -float("inf")
+    wandb_resume_id = None
     resume_ckpt = ckpt_dir / "controller_ppo_latest.pt"
     if args.resume and resume_ckpt.exists():
         ckpt = torch.load(resume_ckpt, map_location=device, weights_only=False)
@@ -538,6 +539,7 @@ def main():
         optimizer.load_state_dict(ckpt["optimizer"])
         start_iteration = ckpt["iteration"] + 1
         best_eval = ckpt.get("best_eval", -float("inf"))
+        wandb_resume_id = ckpt.get("wandb_run_id")
         # Restore RNG state for reproducible continuation
         rng = np.random.default_rng()
         rng.bit_generator.state = ckpt["rng_state"]
@@ -556,7 +558,7 @@ def main():
             json.dump(vars(args), f, indent=2)
 
     wandb_init(project="deepdash", name=f"ppo-{args.embed_dim}d",
-               config=vars(args))
+               config=vars(args), resume_id=wandb_resume_id)
 
     # Fixed eval contexts (from val episodes only)
     # Use a dedicated RNG so eval contexts are identical across resumes
@@ -692,6 +694,7 @@ def main():
                 "ema_controller": ema_controller.state_dict(),
                 "pct_low": pct_normalizer.low,
                 "pct_high": pct_normalizer.high,
+                "wandb_run_id": wandb_run_id(),
             }, ckpt_dir / "controller_ppo_latest.pt")
 
         eval_str = f" | eval={eval_surv} jmp={jump_ratio_str}" \
