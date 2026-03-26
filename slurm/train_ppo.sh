@@ -41,29 +41,7 @@ python -u scripts/train_controller_ppo.py \
     --pretrained checkpoints/controller_bc_best.pt \
     $RESUME_FLAG \
     --n-iterations 15000 \
-    --n-episodes 512 \
-    --lr 1e-4 \
-    --gamma 0.995 \
-    --lam 0.95 \
-    --clip-eps 0.2 \
-    --ppo-epochs 4 \
-    --minibatch-size 512 \
-    --entropy-coeff 0.01 \
-    --critic-coeff 0.5 \
-    --max-grad-norm 0.5 \
-    --max-dream-steps 45 \
-    --death-threshold 0.5 \
-    --token-embed-dim 16 \
-    --context-frames 4 \
-    --vocab-size 1000 \
-    --tokens-per-frame 64 \
-    --embed-dim 384 \
-    --n-heads 8 \
-    --n-layers 8 \
-    --dropout 0.1 \
     --checkpoint-dir checkpoints \
-    --n-eval-episodes 512 \
-    --eval-interval 10 \
     --seed 42 &
 
 # Wait for training process (needed for signal handling)
