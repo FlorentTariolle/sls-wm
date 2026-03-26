@@ -83,7 +83,8 @@ python -u scripts/train_transformer.py \
     --token-noise 0.05 \
     --fsq-noise 0.05 \
     --label-smoothing 0.1 \
-    --fsq-sigma 0 \
+    --fsq-sigma 0.9 \
+    --fsq-dim-weights 1.30 0.84 0.97 0.89 \
     --focal-gamma 2.0 \
     --death-oversample 4 \
     --steps-per-epoch 500 \

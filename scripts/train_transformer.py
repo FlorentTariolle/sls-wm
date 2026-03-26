@@ -32,17 +32,21 @@ def _unwrap(model):
     return model._orig_mod if hasattr(model, "_orig_mod") else model
 
 
-def build_structured_smooth_targets(levels, full_vocab_size, sigma=1.0, smoothing=0.1):
+def build_structured_smooth_targets(levels, full_vocab_size, sigma=1.0, smoothing=0.1,
+                                    dim_weights=None):
     """Precompute FSQ-structured soft target distributions.
 
-    Visual tokens (0..prod(levels)-1): Gaussian kernel over squared FSQ
-    coordinate distance. Status tokens (ALIVE, DEATH): hard targets.
+    Visual tokens (0..prod(levels)-1): Gaussian kernel over weighted squared
+    FSQ coordinate distance. Status tokens (ALIVE, DEATH): hard targets.
 
     Args:
         levels: FSQ quantization levels, e.g. [8, 5, 5, 5].
         full_vocab_size: Total vocab including status tokens (1002).
         sigma: Gaussian kernel width. Controls how fast tolerance decays.
         smoothing: Total probability mass redistributed from correct token.
+        dim_weights: Per-dimension distance weights from sensitivity analysis.
+            Higher weight = more sensitive dim = neighbors further apart.
+            If None, all dimensions weighted equally.
 
     Returns:
         soft_targets: (full_vocab_size, full_vocab_size) float tensor.
@@ -67,8 +71,11 @@ def build_structured_smooth_targets(levels, full_vocab_size, sigma=1.0, smoothin
             coords[idx, d] = remainder // divisors[d]
             remainder = remainder % divisors[d]
 
-    # Pairwise squared Euclidean distance in FSQ coordinate space
+    # Pairwise weighted squared Euclidean distance in FSQ coordinate space
     diff = coords.unsqueeze(1) - coords.unsqueeze(0)  # (V, V, D)
+    if dim_weights is not None:
+        w = torch.tensor(dim_weights, dtype=torch.float32)  # (D,)
+        diff = diff * w.view(1, 1, -1)
     sq_dist = (diff ** 2).sum(dim=-1)  # (V, V)
 
     # Gaussian kernel weights (zero on diagonal — handled separately)
@@ -346,43 +353,44 @@ def main():
     parser.add_argument("--episodes-dir", default="data/death_episodes")
     parser.add_argument("--expert-episodes-dir", default="data/expert_episodes",
                         help="Directory with expert episodes (no death on last frame)")
-    parser.add_argument("--epochs", type=int, default=200)
-    parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--lr", type=float, default=4e-3)
-    parser.add_argument("--lr-min", type=float, default=5e-4)
-    parser.add_argument("--context-frames", type=int, default=4)
-    parser.add_argument("--vocab-size", type=int, default=1000,
-                        help="Tokenizer vocabulary size (1000 for FSQ, 1024 for VQ-VAE)")
-    parser.add_argument("--tokens-per-frame", type=int, default=64,
-                        help="Tokens per frame (64 for 8x8 FSQ, 36 for 6x6 VQ-VAE)")
-    parser.add_argument("--embed-dim", type=int, default=384)
-    parser.add_argument("--n-heads", type=int, default=8)
-    parser.add_argument("--n-layers", type=int, default=8)
-    parser.add_argument("--dropout", type=float, default=0.1)
-    parser.add_argument("--weight-decay", type=float, default=0.01)
+    parser.add_argument("--config", default=None, help="YAML config path (default: configs/v3.yaml)")
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--lr-min", type=float, default=None)
+    parser.add_argument("--context-frames", type=int, default=None)
+    parser.add_argument("--vocab-size", type=int, default=None)
+    parser.add_argument("--tokens-per-frame", type=int, default=None)
+    parser.add_argument("--embed-dim", type=int, default=None)
+    parser.add_argument("--n-heads", type=int, default=None)
+    parser.add_argument("--n-layers", type=int, default=None)
+    parser.add_argument("--dropout", type=float, default=None)
+    parser.add_argument("--weight-decay", type=float, default=None)
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--checkpoint-dir", default="checkpoints")
     parser.add_argument("--resume", action="store_true")
-    parser.add_argument("--patience", type=int, default=30)
-    parser.add_argument("--cpc-weight", type=float, default=1.0)
-    parser.add_argument("--token-noise", type=float, default=0.05,
-                        help="Random token replacement noise rate")
-    parser.add_argument("--fsq-noise", type=float, default=0.05,
-                        help="FSQ neighbor substitution noise rate")
-    parser.add_argument("--fsq-levels", type=int, nargs="+", default=[8, 5, 5, 5],
+    parser.add_argument("--patience", type=int, default=None)
+    parser.add_argument("--cpc-weight", type=float, default=None)
+    parser.add_argument("--token-noise", type=float, default=None)
+    parser.add_argument("--fsq-noise", type=float, default=None)
+    parser.add_argument("--fsq-levels", type=int, nargs="+", default=None,
                         help="FSQ quantization levels (must match tokenizer)")
-    parser.add_argument("--label-smoothing", type=float, default=0.1,
-                        help="Label smoothing amount (used with --fsq-sigma for structured smoothing)")
-    parser.add_argument("--fsq-sigma", type=float, default=1.0,
+    parser.add_argument("--label-smoothing", type=float, default=None)
+    parser.add_argument("--fsq-sigma", type=float, default=None,
                         help="Gaussian kernel width for structured label smoothing (0 = uniform)")
-    parser.add_argument("--focal-gamma", type=float, default=2.0,
-                        help="Focal loss gamma (0 = standard CE)")
-    parser.add_argument("--death-oversample", type=int, default=5,
-                        help="Repeat death-frame samples this many times (1 = no oversampling)")
-    parser.add_argument("--steps-per-epoch", type=int, default=0,
-                        help="Cap training steps per epoch (0 = full dataset)")
+    parser.add_argument("--fsq-dim-weights", type=float, nargs="+", default=None,
+                        help="Per-dimension distance weights for structured smoothing")
+    parser.add_argument("--focal-gamma", type=float, default=None)
+    parser.add_argument("--death-oversample", type=int, default=None)
+    parser.add_argument("--steps-per-epoch", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
+
+    from deepdash.config import apply_config
+    apply_config(args, section="transformer")
+    # Map model.levels -> fsq_levels if not set via CLI
+    if args.fsq_levels is None:
+        args.fsq_levels = getattr(args, "levels", [8, 5, 5, 5])
 
     # Handle SIGTERM (from SLURM timeout) gracefully
     def _sigterm_handler(sig, frame):
@@ -562,11 +570,13 @@ def main():
         soft_target_matrix = build_structured_smooth_targets(
             args.fsq_levels, model.full_vocab_size,
             sigma=args.fsq_sigma, smoothing=args.label_smoothing,
+            dim_weights=args.fsq_dim_weights,
         ).to(device)
         # Check how concentrated the smoothing mass is
         visual_row = soft_target_matrix[0, :model.vocab_size]
         top5 = visual_row.topk(6).values  # includes self
-        print(f"Structured label smoothing: σ={args.fsq_sigma}, ε={args.label_smoothing}")
+        w_str = f", dim_weights={args.fsq_dim_weights}" if args.fsq_dim_weights else ""
+        print(f"Structured label smoothing: σ={args.fsq_sigma}, ε={args.label_smoothing}{w_str}")
         print(f"  Top-6 target probs for token 0: {top5.tolist()}")
     else:
         soft_target_matrix = None
