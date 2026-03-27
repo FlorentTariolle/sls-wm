@@ -591,7 +591,9 @@ class AdaLNTransformerBlock(nn.Module):
         B, T, D = x.shape
 
         # AdaLN-Zero modulation from conditioning vector
-        mods = self.adaln_proj(cond)  # (B, 6*D)
+        # Tanh bounding prevents unbounded compounding through layers
+        # (ref: DP-aware AdaLN-Zero, arXiv 2602.22610)
+        mods = self.adaln_proj(cond).tanh()  # (B, 6*D), bounded [-1, 1]
         scale1, shift1, gate1, scale2, shift2, gate2 = mods.chunk(6, dim=-1)
         scale1 = scale1.unsqueeze(1)  # (B, 1, D)
         shift1 = shift1.unsqueeze(1)
