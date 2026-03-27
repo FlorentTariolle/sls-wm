@@ -57,6 +57,7 @@ class WorldModel(nn.Module):
         dropout: float = 0.1,
         cpc_dim: int = 64,
         tokens_per_frame: int = 64,
+        adaln: bool = False,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -64,6 +65,7 @@ class WorldModel(nn.Module):
         self.embed_dim = embed_dim
         self.context_frames = context_frames
         self.tokens_per_frame = tokens_per_frame
+        self.adaln = adaln
 
         # Death token indices (appended as 65th position per frame)
         self.ALIVE_TOKEN = vocab_size      # index for alive status
@@ -73,12 +75,25 @@ class WorldModel(nn.Module):
         # Tokens per frame block: visual tokens + 1 status token
         self.block_size = tokens_per_frame + 1
 
-        # Sequence length: K * (block_size + 1 action) + block_size target
-        self.seq_len = context_frames * (self.block_size + 1) + self.block_size
+        if adaln:
+            # No action tokens in sequence — actions injected via AdaLN
+            self.seq_len = (context_frames + 1) * self.block_size
+        else:
+            # Sequence length: K * (block_size + 1 action) + block_size target
+            self.seq_len = context_frames * (self.block_size + 1) + self.block_size
 
         # Embeddings (no absolute positional — using RoPE)
         self.token_embed = nn.Embedding(self.full_vocab_size, embed_dim)
-        self.action_embed = nn.Embedding(n_actions, embed_dim)
+        if not adaln:
+            self.action_embed = nn.Embedding(n_actions, embed_dim)
+
+        # AdaLN: action conditioning MLP
+        if adaln:
+            self.action_cond = nn.Sequential(
+                nn.Linear(n_actions * context_frames, embed_dim),
+                nn.SiLU(),
+                nn.Linear(embed_dim, embed_dim),
+            )
 
         # 3D-RoPE precomputed frequencies
         head_dim = embed_dim // n_heads
@@ -88,8 +103,9 @@ class WorldModel(nn.Module):
         self.register_buffer("rope_sin", rope_sin)
 
         # Transformer blocks
+        BlockClass = AdaLNTransformerBlock if adaln else TransformerBlock
         self.blocks = nn.ModuleList([
-            TransformerBlock(embed_dim, n_heads, dropout)
+            BlockClass(embed_dim, n_heads, dropout)
             for _ in range(n_layers)
         ])
         self.ln_f = nn.LayerNorm(embed_dim)
@@ -118,10 +134,17 @@ class WorldModel(nn.Module):
 
         self._init_weights()
 
-    def _backbone_forward(self, x):
+        # Zero-init AdaLN projections AFTER _init_weights
+        if adaln:
+            for block in self.blocks:
+                nn.init.zeros_(block.adaln_proj[-1].weight)
+                nn.init.zeros_(block.adaln_proj[-1].bias)
+
+    def _backbone_forward(self, x, cond=None):
         """Run transformer blocks + final layernorm (compile-friendly hot path)."""
         for block in self.blocks:
-            x, _ = block(x, self.attn_mask, self.rope_cos, self.rope_sin)
+            x, _ = block(x, self.attn_mask, self.rope_cos, self.rope_sin,
+                         cond=cond)
         return self.ln_f(x)
 
     def _build_position_ids(self):
@@ -153,11 +176,12 @@ class WorldModel(nn.Module):
             cols[pos + self.tokens_per_frame] = center
             frames[pos + self.tokens_per_frame] = i
             pos += BS
-            # Action token
-            rows[pos] = center
-            cols[pos] = center
-            frames[pos] = i
-            pos += 1
+            if not self.adaln:
+                # Action token (not present in AdaLN mode)
+                rows[pos] = center
+                cols[pos] = center
+                frames[pos] = i
+                pos += 1
 
         # Target frame
         for j in range(self.tokens_per_frame):
@@ -226,15 +250,20 @@ class WorldModel(nn.Module):
         # Assign block index to each position
         block_idx = torch.zeros(S, dtype=torch.long)
         pos = 0
-        for i in range(K):
-            block_idx[pos:pos + BS] = 2 * i       # frame block i (visual + status)
-            pos += BS
-            block_idx[pos] = 2 * i + 1             # action i
-            pos += 1
-        block_idx[pos:] = 2 * K                    # target frame block
+        if self.adaln:
+            for i in range(K):
+                block_idx[pos:pos + BS] = i
+                pos += BS
+            block_idx[pos:] = K
+        else:
+            for i in range(K):
+                block_idx[pos:pos + BS] = 2 * i       # frame block i
+                pos += BS
+                block_idx[pos] = 2 * i + 1             # action i
+                pos += 1
+            block_idx[pos:] = 2 * K                    # target frame block
 
         # Block-causal: query can attend to same or earlier blocks
-        # Target block is bidirectional within (all target tokens see each other)
         mask = block_idx.unsqueeze(1) < block_idx.unsqueeze(0)
 
         return mask
@@ -257,11 +286,15 @@ class WorldModel(nn.Module):
         if B < 2:
             return torch.tensor(0.0, device=x.device)
 
-        # Action positions: after each frame block (block_size tokens)
-        action_positions = [i * (BS + 1) + BS for i in range(K)]
+        if self.adaln:
+            # AdaLN: use status token (last position of each frame block)
+            anchor_positions = [(i + 1) * BS - 1 for i in range(K)]
+        else:
+            # Standard: use action token positions
+            anchor_positions = [i * (BS + 1) + BS for i in range(K)]
 
-        # Hidden states at action positions + target summary (last pos)
-        h_steps = [x[:, pos] for pos in action_positions]
+        # Hidden states at anchor positions + target summary (last pos)
+        h_steps = [x[:, pos] for pos in anchor_positions]
         h_steps.append(x[:, -1])
 
         z_targets = [F.normalize(self.cpc_target_proj(h.detach()), dim=-1)
@@ -308,24 +341,33 @@ class WorldModel(nn.Module):
         B = frame_tokens.size(0)
         K = self.context_frames
 
-        # Build interleaved context: [f0(65) a0 f1(65) a1 ... fK-1(65) aK-1]
         parts = []
-        for i in range(K):
-            parts.append(self.token_embed(frame_tokens[:, i]))    # (B, 65, D)
-            act = self.action_embed(actions[:, i])
-            parts.append(act.unsqueeze(1))                        # (B, 1, D)
+        cond = None
+
+        if self.adaln:
+            # AdaLN: actions injected via conditioning, not in sequence
+            act_onehot = F.one_hot(actions, self.n_actions).float()
+            cond = self.action_cond(act_onehot.reshape(B, -1))  # (B, D)
+            for i in range(K):
+                parts.append(self.token_embed(frame_tokens[:, i]))
+            ctx_end = K * self.block_size
+        else:
+            # Standard: interleaved [f0(65) a0 f1(65) a1 ... fK-1(65) aK-1]
+            for i in range(K):
+                parts.append(self.token_embed(frame_tokens[:, i]))
+                act = self.action_embed(actions[:, i])
+                parts.append(act.unsqueeze(1))
+            ctx_end = K * (self.block_size + 1)
 
         # All target positions use mask_embed (no peeking at ground truth)
         target_embed = self.mask_embed.expand(B, self.block_size, -1)
-
         parts.append(target_embed)
         x = torch.cat(parts, dim=1)  # (B, seq_len, D)
         x = self.embed_drop(x)
 
-        x = self._backbone_forward(x)
+        x = self._backbone_forward(x, cond=cond)
 
         # No GPT-shift: each target position predicts its own token
-        ctx_end = K * (self.block_size + 1)
         predict_positions = x[:, ctx_end:ctx_end + self.block_size]  # (B, 65, D)
         logits = self.head(predict_positions)  # (B, 65, full_vocab_size)
 
@@ -384,20 +426,29 @@ class WorldModel(nn.Module):
         """
         K = self.context_frames
         parts = []
-        for i in range(K):
-            parts.append(self.token_embed(frame_tokens[:, i]))
-            act = self.action_embed(actions[:, i])
-            parts.append(act.unsqueeze(1))
-        x = torch.cat(parts, dim=1)
+        cond = None
 
-        ctx_len = K * (self.block_size + 1)
+        if self.adaln:
+            act_onehot = F.one_hot(actions, self.n_actions).float()
+            cond = self.action_cond(act_onehot.reshape(actions.size(0), -1))
+            for i in range(K):
+                parts.append(self.token_embed(frame_tokens[:, i]))
+            ctx_len = K * self.block_size
+        else:
+            for i in range(K):
+                parts.append(self.token_embed(frame_tokens[:, i]))
+                act = self.action_embed(actions[:, i])
+                parts.append(act.unsqueeze(1))
+            ctx_len = K * (self.block_size + 1)
+
+        x = torch.cat(parts, dim=1)
         ctx_mask = self.attn_mask[:ctx_len, :ctx_len]
         rope_cos_ctx = self.rope_cos[:ctx_len]
         rope_sin_ctx = self.rope_sin[:ctx_len]
 
         for block in self.blocks:
             x, _ = block(x, ctx_mask, rope_cos_ctx, rope_sin_ctx,
-                         use_cache=False)
+                         use_cache=False, cond=cond)
         x = self.ln_f(x)
         return x[:, -1]  # h_t at last context position
 
@@ -433,13 +484,22 @@ class WorldModel(nn.Module):
 
         # --- Phase 1: Prefill context ---
         parts = []
-        for i in range(K):
-            parts.append(self.token_embed(frame_tokens[:, i]))    # (B, 65, D)
-            act = self.action_embed(actions[:, i])
-            parts.append(act.unsqueeze(1))                        # (B, 1, D)
-        x = torch.cat(parts, dim=1)  # (B, ctx_len, D)
+        cond = None
 
-        ctx_len = K * (self.block_size + 1)
+        if self.adaln:
+            act_onehot = F.one_hot(actions, self.n_actions).float()
+            cond = self.action_cond(act_onehot.reshape(B, -1))
+            for i in range(K):
+                parts.append(self.token_embed(frame_tokens[:, i]))
+            ctx_len = K * self.block_size
+        else:
+            for i in range(K):
+                parts.append(self.token_embed(frame_tokens[:, i]))
+                act = self.action_embed(actions[:, i])
+                parts.append(act.unsqueeze(1))
+            ctx_len = K * (self.block_size + 1)
+
+        x = torch.cat(parts, dim=1)  # (B, ctx_len, D)
         ctx_mask = self.attn_mask[:ctx_len, :ctx_len]
         rope_cos_ctx = self.rope_cos[:ctx_len]
         rope_sin_ctx = self.rope_sin[:ctx_len]
@@ -447,22 +507,20 @@ class WorldModel(nn.Module):
         context_kvs = []
         for block in self.blocks:
             x, kv = block(x, ctx_mask, rope_cos_ctx, rope_sin_ctx,
-                          use_cache=True)
+                          use_cache=True, cond=cond)
             context_kvs.append(kv)
         x = self.ln_f(x)
         h_t = x[:, -1] if return_hidden else None
 
         # --- Phase 2: Parallel decode (all tokens in one forward pass) ---
         target_embed = self.mask_embed.expand(B, n_tokens, -1)
-        # Full rope covers all key positions (ctx + target) so that
-        # un-rotated cached keys get correct RoPE applied at attention time.
         full_rope_cos = self.rope_cos[:ctx_len + n_tokens]
         full_rope_sin = self.rope_sin[:ctx_len + n_tokens]
 
         h = target_embed
         for i, block in enumerate(self.blocks):
             h, _ = block(h, None, full_rope_cos, full_rope_sin,
-                         past_kv=context_kvs[i], use_cache=False)
+                         past_kv=context_kvs[i], use_cache=False, cond=cond)
         h = self.ln_f(h)
         logits = self.head(h)  # (B, 65, vocab)
 
@@ -481,6 +539,87 @@ class WorldModel(nn.Module):
         if return_hidden:
             return predicted[:, :TPF], death_prob, h_t
         return predicted[:, :TPF], death_prob
+
+
+class AdaLNTransformerBlock(nn.Module):
+    """Transformer block with Adaptive Layer Normalization for action conditioning.
+
+    Instead of interleaving action tokens in the sequence, actions modulate
+    each layer via scale/shift on the LayerNorms. Zero-initialized so the
+    model starts as vanilla LayerNorm and gradually learns to use actions.
+
+    Reference: Peebles & Xie, 2023 (DiT); LeWorldModel (Galilai group).
+    """
+
+    def __init__(self, embed_dim, n_heads, dropout):
+        super().__init__()
+        self.n_heads = n_heads
+        self.head_dim = embed_dim // n_heads
+
+        # LayerNorm without learned affine (AdaLN provides scale/shift)
+        self.ln1 = nn.LayerNorm(embed_dim, elementwise_affine=False)
+        self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
+        self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self.attn_drop = nn.Dropout(dropout)
+        self.resid_drop = nn.Dropout(dropout)
+
+        self.ln2 = nn.LayerNorm(embed_dim, elementwise_affine=False)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout),
+        )
+
+        # Conditioning -> (scale1, shift1, scale2, shift2)
+        self.adaln_proj = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(embed_dim, 4 * embed_dim),
+        )
+
+    def forward(self, x, attn_mask, rope_cos, rope_sin,
+                past_kv=None, use_cache=False, cond=None):
+        B, T, D = x.shape
+
+        # AdaLN modulation from conditioning vector
+        mods = self.adaln_proj(cond)  # (B, 4*D)
+        scale1, shift1, scale2, shift2 = mods.chunk(4, dim=-1)
+        scale1 = scale1.unsqueeze(1)  # (B, 1, D)
+        shift1 = shift1.unsqueeze(1)
+        scale2 = scale2.unsqueeze(1)
+        shift2 = shift2.unsqueeze(1)
+
+        h = self.ln1(x) * (1 + scale1) + shift1
+
+        qkv = self.qkv(h).reshape(B, T, 3, self.n_heads, self.head_dim)
+        q, k, v = qkv.permute(2, 0, 3, 1, 4)
+
+        present_kv = (k, v) if use_cache else None
+
+        if past_kv is not None:
+            past_k, past_v = past_kv
+            k = torch.cat([past_k, k], dim=2)
+            v = torch.cat([past_v, v], dim=2)
+            q = apply_rope(q, rope_cos[-T:], rope_sin[-T:])
+            k = apply_rope(k, rope_cos, rope_sin)
+        else:
+            q = apply_rope(q, rope_cos, rope_sin)
+            k = apply_rope(k, rope_cos, rope_sin)
+
+        if attn_mask is not None:
+            sdpa_mask = ~attn_mask
+        else:
+            sdpa_mask = None
+
+        drop_p = self.attn_drop.p if self.training else 0.0
+        h = F.scaled_dot_product_attention(
+            q, k, v, attn_mask=sdpa_mask, dropout_p=drop_p,
+        ).transpose(1, 2).reshape(B, T, D)
+        h = self.out_proj(h)
+
+        x = x + self.resid_drop(h)
+        x = x + self.mlp(self.ln2(x) * (1 + scale2) + shift2)
+        return x, present_kv
 
 
 class TransformerBlock(nn.Module):
@@ -504,7 +643,7 @@ class TransformerBlock(nn.Module):
         )
 
     def forward(self, x, attn_mask, rope_cos, rope_sin,
-                past_kv=None, use_cache=False):
+                past_kv=None, use_cache=False, cond=None):
         B, T, D = x.shape
         h = self.ln1(x)
 

@@ -12,6 +12,7 @@ model:
   context_frames: 4
   levels: [8, 5, 5, 5]
   dropout: 0.15
+  adaln: true
 
 # FSQ-VAE training
 fsq:

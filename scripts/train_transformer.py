@@ -472,6 +472,7 @@ def main():
         context_frames=args.context_frames,
         dropout=args.dropout,
         tokens_per_frame=args.tokens_per_frame,
+        adaln=getattr(args, 'adaln', False),
     ).to(device)
 
     # Pre-stack into contiguous tensors (avoids per-item numpy->torch overhead)

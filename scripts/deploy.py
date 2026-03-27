@@ -142,6 +142,7 @@ def main():
         n_heads=args.n_heads, n_layers=args.n_layers,
         context_frames=args.context_frames, dropout=args.dropout,
         tokens_per_frame=args.tokens_per_frame,
+        adaln=getattr(args, 'adaln', False),
     ).to(device)
     state = torch.load(args.transformer_checkpoint, map_location=device,
                        weights_only=True)
