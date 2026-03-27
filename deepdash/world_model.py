@@ -581,8 +581,10 @@ class AdaLNTransformerBlock(nn.Module):
                 past_kv=None, use_cache=False, cond=None):
         B, T, D = x.shape
 
-        # AdaLN modulation from conditioning vector
-        mods = self.adaln_proj(cond)  # (B, 4*D)
+        # AdaLN modulation from conditioning vector.
+        # Computed in float32 to avoid FP16 overflow with (1 + scale).
+        with torch.autocast(device_type=cond.device.type, enabled=False):
+            mods = self.adaln_proj(cond.float())  # (B, 4*D)
         scale1, shift1, scale2, shift2 = mods.chunk(4, dim=-1)
         scale1 = scale1.unsqueeze(1)  # (B, 1, D)
         shift1 = shift1.unsqueeze(1)
