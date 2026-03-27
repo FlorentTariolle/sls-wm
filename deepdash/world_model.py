@@ -571,25 +571,28 @@ class AdaLNTransformerBlock(nn.Module):
             nn.Dropout(dropout),
         )
 
-        # Conditioning -> (scale1, shift1, scale2, shift2)
+        # AdaLN-Zero: (scale1, shift1, gate1, scale2, shift2, gate2)
+        # Gates multiply sublayer output before residual addition.
+        # At zero-init, gate=0 makes each block pure identity.
+        # Reference: DiT (Peebles & Xie, 2023), LeWorldModel (Galilai).
         self.adaln_proj = nn.Sequential(
             nn.SiLU(),
-            nn.Linear(embed_dim, 4 * embed_dim),
+            nn.Linear(embed_dim, 6 * embed_dim),
         )
 
     def forward(self, x, attn_mask, rope_cos, rope_sin,
                 past_kv=None, use_cache=False, cond=None):
         B, T, D = x.shape
 
-        # AdaLN modulation from conditioning vector.
-        # Computed in float32 to avoid FP16 overflow with (1 + scale).
-        with torch.autocast(device_type=cond.device.type, enabled=False):
-            mods = self.adaln_proj(cond.float())  # (B, 4*D)
-        scale1, shift1, scale2, shift2 = mods.chunk(4, dim=-1)
+        # AdaLN-Zero modulation from conditioning vector
+        mods = self.adaln_proj(cond)  # (B, 6*D)
+        scale1, shift1, gate1, scale2, shift2, gate2 = mods.chunk(6, dim=-1)
         scale1 = scale1.unsqueeze(1)  # (B, 1, D)
         shift1 = shift1.unsqueeze(1)
+        gate1 = gate1.unsqueeze(1)
         scale2 = scale2.unsqueeze(1)
         shift2 = shift2.unsqueeze(1)
+        gate2 = gate2.unsqueeze(1)
 
         h = self.ln1(x) * (1 + scale1) + shift1
 
@@ -619,8 +622,8 @@ class AdaLNTransformerBlock(nn.Module):
         ).transpose(1, 2).reshape(B, T, D)
         h = self.out_proj(h)
 
-        x = x + self.resid_drop(h)
-        x = x + self.mlp(self.ln2(x) * (1 + scale2) + shift2)
+        x = x + gate1 * self.resid_drop(h)
+        x = x + gate2 * self.mlp(self.ln2(x) * (1 + scale2) + shift2)
         return x, present_kv
 
 
