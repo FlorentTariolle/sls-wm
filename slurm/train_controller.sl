@@ -1,0 +1,64 @@
+#!/bin/bash
+#SBATCH -J "train_ctrl"
+#SBATCH -o slurm/logs/train_controller.out
+#SBATCH -e slurm/logs/train_controller.err
+#SBATCH -p ar_a100
+#SBATCH --gres=gpu:a100:1
+#SBATCH -n 1
+#SBATCH --cpus-per-gpu 8
+#SBATCH --mem 64G
+#SBATCH --time=08:00:00
+
+# Combined BC pretraining + PPO fine-tuning.
+# On first run: BC trains (~5 min), then PPO starts.
+# On resume (job restart): BC skipped, PPO resumes from checkpoint.
+#
+# Submit:  sbatch slurm/train_controller.sl
+# Monitor: tail -f slurm/logs/train_controller.out
+
+module purge
+module load aidl/pytorch/2.6.0-cuda12.6
+export PATH="$HOME/.local/bin:$PATH"
+pip install --user wandb 2>/dev/null
+
+# --- Phase 1: BC (skipped if PPO checkpoint exists) ---
+if [ ! -f checkpoints/controller_ppo_latest.pt ]; then
+    echo "=== Phase 1: Behavioral Cloning ==="
+    python -u scripts/train_controller_bc.py \
+        --expert-episodes-dir data/expert_episodes \
+        --transformer-checkpoint checkpoints/transformer_best.pt \
+        --epochs 50 \
+        --batch-size 512 \
+        --lr 1e-3 \
+        --weight-decay 1e-4 \
+        --val-ratio 0.1 \
+        --checkpoint-dir checkpoints \
+        --seed 42
+
+    BC_EXIT=$?
+    if [ $BC_EXIT -ne 0 ]; then
+        echo "BC failed with exit code $BC_EXIT"
+        exit $BC_EXIT
+    fi
+    echo "=== BC complete ==="
+    PRETRAINED="--pretrained checkpoints/controller_bc_best.pt"
+else
+    echo "=== Skipping BC (PPO checkpoint found, resuming) ==="
+    PRETRAINED=""
+fi
+
+# --- Phase 2: PPO ---
+echo "=== Phase 2: PPO ==="
+RESUME_FLAG=""
+if [ -f checkpoints/controller_ppo_latest.pt ]; then
+    RESUME_FLAG="--resume"
+fi
+
+python -u scripts/train_controller_ppo.py \
+    --transformer-checkpoint checkpoints/transformer_best.pt \
+    --episodes-dir data/death_episodes \
+    --expert-episodes-dir data/expert_episodes \
+    --checkpoint-dir checkpoints \
+    --seed 42 \
+    $PRETRAINED \
+    $RESUME_FLAG
