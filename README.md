@@ -1,6 +1,35 @@
-# DeepDash
+# SLS-WM: Structured Label Smoothing for Discrete World Models
 
-**World Models for Geometry Dash** -- Train a controller entirely in imagination, deploy at 30 FPS on the real game via screen capture.
+Official implementation of **SLS-WM**, a world model architecture that introduces *FSQ-Structured Label Smoothing*: a topology-aware training objective for discrete latent predictors. The method replaces uniform label smoothing with a Gaussian kernel defined over the metric structure of the Finite Scalar Quantization (FSQ) codebook, weighted by per-dimension visual sensitivity.
+
+**DeepDash** is the reinforcement learning environment suite developed to evaluate SLS-WM. It targets Geometry Dash, a deterministic platformer with binary actions (jump/idle) and precision timing constraints, where a controller is trained entirely in imagination and deployed at 30 FPS on the real game via screen capture.
+
+## Contributions
+
+### Primary: FSQ-Structured Label Smoothing
+
+Standard label smoothing redistributes probability mass uniformly across the vocabulary, treating all incorrect tokens as equally wrong. In discrete latent spaces produced by FSQ, this assumption is incorrect: a token differing by one quantization level in a single dimension reconstructs to a near-identical image patch, while a distant token produces an unrelated output.
+
+SLS-WM addresses this by defining a structured target distribution:
+
+$$
+q(j \mid i) = \begin{cases}
+1 - \varepsilon & \text{if } j = i \\
+\varepsilon \cdot \dfrac{w(i, j)}{\sum_{k \neq i} w(i, k)} & \text{otherwise}
+\end{cases}
+$$
+
+where the kernel weight is a Gaussian over weighted squared Euclidean distance in FSQ coordinate space:
+
+$$
+w(i, j) = \exp\!\left(-\frac{\sum_d \alpha_d \cdot (\Delta_d)^2}{2\sigma^2}\right)
+$$
+
+The per-dimension weights $\alpha_d$ are calibrated from empirical patch-level MSE analysis (800 samples per perturbation type), measuring the actual visual impact of each FSQ dimension. This formulation generalizes to any discrete latent space equipped with a coordinate metric.
+
+### Secondary: Real-Time World Model Deployment
+
+A complete inference pipeline achieving 30 FPS real-time play on a live game, with no game API access. The pipeline uses GPU-resident token ring buffers, CUDA Graphs, and `torch.compile` to maintain sub-33ms latency per frame.
 
 ## Architecture
 
@@ -8,11 +37,11 @@
 
 | Component | Model | Params | Function |
 |-----------|-------|--------|----------|
-| **V** (Vision) | FSQ-VAE [8,5,5,5] | 1.9M (0.9M encoder) | 64x64 Sobel frame -> 8x8 discrete tokens (1000 codes) |
+| **V** (Vision) | FSQ-VAE [8,5,5,5] | 1.9M (0.9M encoder) | 64x64 Sobel frame to 8x8 discrete tokens (1000 codes) |
 | **M** (Memory) | Transformer 384d/8H/8L | 14.7M | Predicts next tokens + death, produces h_t |
-| **C** (Controller) | CNNPolicy + MTP | ~40K | Token grid + h_t -> jump/idle (+ 8-step action prediction) |
+| **C** (Controller) | CNNPolicy + MTP | ~40K | Token grid + h_t to jump/idle (+ 8-step action prediction) |
 
-## Latest Results (V3)
+## Results (V3)
 
 | Metric | V1 | V2 | V3 (current) |
 |--------|-----|-----|-------------|
@@ -22,11 +51,6 @@
 | BC val acc | 78% | 83.6% | 87.1% |
 | Level 1 progress | 10% | 11% | 20% |
 | Inference | 27ms | 24ms | ~27ms |
-
-## Novel Contributions
-
-- **FSQ-structured label smoothing**: Gaussian kernel over FSQ coordinate distance instead of uniform smoothing
-- **Real-time World Models deployment**: screen capture agent on a real game at 30 FPS (no game API)
 
 ## Pipeline
 
@@ -66,14 +90,14 @@
 - **PPO**: clipped surrogate + MTP auxiliary loss (8-step), jump penalty 0.2/jump, percentile-based advantage normalization, EMA target critic (0.98), 45-step dream rollouts, constant LR 1e-4
 
 ### Deployment
-- Screen capture (dxcam) -> Sobel (7ms, GPU) -> FSQ encode (4ms) -> Transformer h_t (14ms) -> Controller (1ms) -> keyboard input
+- Screen capture (dxcam), Sobel (7ms, GPU), FSQ encode (4ms), Transformer h_t (14ms), Controller (1ms), keyboard input
 - GPU token ring buffer (no CPU round-trip), CUDA Graph for encode_context, pinned memory transfer
 - torch.compile on all platforms (PyTorch 2.11+)
 - 30 FPS real-time
 
 ## Version History
 
-See [VERSIONS.md](VERSIONS.md) for full V0 -> V1 -> V2 -> V3 evolution.
+See [VERSIONS.md](VERSIONS.md) for full V0 through V3 evolution.
 
 ## References
 
