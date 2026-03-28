@@ -28,6 +28,19 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+class RMSNorm(nn.Module):
+    """Root Mean Square Layer Normalization (Zhang & Sennrich, 2019)."""
+
+    def __init__(self, dim, eps=1e-6):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(dim))
+        self.eps = eps
+
+    def forward(self, x):
+        norm = x.float().pow(2).mean(-1, keepdim=True).add(self.eps).rsqrt()
+        return (x * norm).to(x.dtype) * self.weight
+
+
 def apply_rope(x, cos, sin):
     """Apply rotary position embedding.
 
@@ -565,6 +578,9 @@ class AdaLNTransformerBlock(nn.Module):
         # LayerNorm without learned affine (AdaLN provides scale/shift)
         self.ln1 = nn.LayerNorm(embed_dim, elementwise_affine=False)
         self.qkv = nn.Linear(embed_dim, 3 * embed_dim)
+        # QK-norm: RMSNorm per head prevents attention logit explosion (SD3/MMDiT)
+        self.ln_q = RMSNorm(self.head_dim)
+        self.ln_k = RMSNorm(self.head_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
         self.attn_drop = nn.Dropout(dropout)
         self.resid_drop = nn.Dropout(dropout)
@@ -591,9 +607,7 @@ class AdaLNTransformerBlock(nn.Module):
         B, T, D = x.shape
 
         # AdaLN-Zero modulation from conditioning vector
-        # Tanh bounding prevents unbounded compounding through layers
-        # (ref: DP-aware AdaLN-Zero, arXiv 2602.22610)
-        mods = self.adaln_proj(cond).tanh()  # (B, 6*D), bounded [-1, 1]
+        mods = self.adaln_proj(cond)  # (B, 6*D)
         scale1, shift1, gate1, scale2, shift2, gate2 = mods.chunk(6, dim=-1)
         scale1 = scale1.unsqueeze(1)  # (B, 1, D)
         shift1 = shift1.unsqueeze(1)
@@ -606,6 +620,7 @@ class AdaLNTransformerBlock(nn.Module):
 
         qkv = self.qkv(h).reshape(B, T, 3, self.n_heads, self.head_dim)
         q, k, v = qkv.permute(2, 0, 3, 1, 4)
+        q, k = self.ln_q(q), self.ln_k(k)
 
         present_kv = (k, v) if use_cache else None
 
