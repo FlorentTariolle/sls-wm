@@ -106,15 +106,12 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
     all_values = []          # (T, B)
     all_alive_masks = []     # (T, B)
 
-    use_amp = device.type == "cuda"
-
     for step in range(max_steps):
         if not alive.any():
             break
 
         with torch.no_grad():
-            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-                pred_tokens, death_prob, h_t = model.predict_next_frame(
+            pred_tokens, death_prob, h_t = model.predict_next_frame(
                     ctx_t, ctx_a, temperature=0.0, return_hidden=True)
 
         died = death_prob > death_threshold
@@ -370,15 +367,12 @@ def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
     survival = torch.zeros(B, dtype=torch.float32, device=device)
     total_jumps = 0
     total_actions = 0
-    use_amp = device.type == "cuda"
-
     for step in range(max_steps):
         if not alive.any():
             break
 
         with torch.no_grad():
-            with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-                pred_tokens, death_prob, h_t = model.predict_next_frame(
+            pred_tokens, death_prob, h_t = model.predict_next_frame(
                     ctx_t, ctx_a, temperature=0.0, return_hidden=True)
 
         died = death_prob > death_threshold
