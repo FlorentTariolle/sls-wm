@@ -26,6 +26,7 @@ slurm/logs/
 *.fls
 *.synctex.gz
 presentation/*.pdf
+plots/
 checkpoints/*_final.pt
 checkpoints/transformer_state.pt
 checkpoints/transformer_state.pt
