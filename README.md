@@ -101,15 +101,15 @@ See [VERSIONS.md](VERSIONS.md) for full V0 through V3 evolution.
 
 ## References
 
-- **FSQ**: Mentzer et al. (2023). *Finite Scalar Quantization: VQ-VAE Made Simple*. [arXiv:2309.15505](https://arxiv.org/abs/2309.15505)
-- **Label Smoothing**: Szegedy et al. (2016). *Rethinking the Inception Architecture for Computer Vision*. CVPR
-- **World Models**: Ha & Schmidhuber (2018). [arXiv:1803.10122](https://arxiv.org/abs/1803.10122)
-- **IRIS**: Micheli et al. (2023). *Transformers are Sample-Efficient World Models*. [arXiv:2209.00588](https://arxiv.org/abs/2209.00588)
-- **TWISTER**: Burchert et al. (2025). *AC-CPC for World Models*. [arXiv:2503.04416](https://arxiv.org/abs/2503.04416)
-- **LeWorldModel**: Charraut et al. (2026). *Stable End-to-End Joint-Embedding Predictive Architecture from Pixels*. [arXiv:2603.19312](https://arxiv.org/abs/2603.19312)
-- **DiT**: Peebles & Xie (2023). *Scalable Diffusion Models with Transformers*. [arXiv:2212.09748](https://arxiv.org/abs/2212.09748)
-- **SD3/MMDiT**: Esser et al. (2024). *Scaling Rectified Flow Transformers for High-Resolution Image Synthesis*. [arXiv:2403.03206](https://arxiv.org/abs/2403.03206)
-- **DreamerV3**: Hafner et al. (2023). *Mastering Diverse Domains through World Models*. [arXiv:2301.04104](https://arxiv.org/abs/2301.04104)
-- **Dreamer 4**: Hafner et al. (2025). *Training Agents Inside of Scalable World Models*. [arXiv:2509.24527](https://arxiv.org/abs/2509.24527)
-- **PPO**: Schulman et al. (2017). *Proximal Policy Optimization Algorithms*. [arXiv:1707.06347](https://arxiv.org/abs/1707.06347)
-- **Focal Loss**: Lin et al. (2017). *Focal Loss for Dense Object Detection*. ICCV
+- **FSQ**: Mentzer et al. (2024). [*Finite Scalar Quantization: VQ-VAE Made Simple*](https://arxiv.org/abs/2309.15505). ICLR
+- **Label Smoothing**: Szegedy et al. (2016). [*Rethinking the Inception Architecture for Computer Vision*](https://arxiv.org/abs/1512.00567). CVPR
+- **World Models**: Ha & Schmidhuber (2018). [*World Models*](https://arxiv.org/abs/1803.10122). NeurIPS
+- **IRIS**: Micheli et al. (2023). [*Transformers are Sample-Efficient World Models*](https://arxiv.org/abs/2209.00588). ICLR
+- **TWISTER**: Burchert et al. (2025). [*Transformer-based World Models with AC-CPC*](https://arxiv.org/abs/2503.04416). ICLR
+- **LeWorldModel**: Charraut et al. (2026). [*Stable End-to-End Joint-Embedding Predictive Architecture from Pixels*](https://arxiv.org/abs/2603.19312). Preprint
+- **DiT**: Peebles & Xie (2023). [*Scalable Diffusion Models with Transformers*](https://arxiv.org/abs/2212.09748). ICCV
+- **SD3/MMDiT**: Esser et al. (2024). [*Scaling Rectified Flow Transformers for High-Resolution Image Synthesis*](https://arxiv.org/abs/2403.03206). ICML
+- **DreamerV3**: Hafner et al. (2025). [*Mastering Diverse Domains through World Models*](https://arxiv.org/abs/2301.04104). Nature
+- **Dreamer 4**: Hafner et al. (2025). [*Training Agents Inside of Scalable World Models*](https://arxiv.org/abs/2509.24527). Preprint
+- **PPO**: Schulman et al. (2017). [*Proximal Policy Optimization Algorithms*](https://arxiv.org/abs/1707.06347). Preprint
+- **Focal Loss**: Lin et al. (2017). [*Focal Loss for Dense Object Detection*](https://arxiv.org/abs/1708.02002). ICCV
