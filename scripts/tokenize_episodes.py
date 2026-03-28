@@ -43,6 +43,8 @@ def main():
     parser.add_argument("--levels", type=int, nargs="+", default=[8, 5, 5, 5])
     parser.add_argument("--no-shift-check", action="store_true",
                         help="Skip shift directory verification (for local testing)")
+    parser.add_argument("--split", choices=["all", "train", "val"], default="all",
+                        help="Tokenize only train or val episodes (default: all)")
     args = parser.parse_args()
 
     if args.checkpoint is None:
@@ -82,10 +84,19 @@ def main():
                   "Run scripts/shift_episodes.py first.")
             sys.exit(1)
 
-    # Tokenize all episodes (base + pre-shifted)
+    # Tokenize episodes (optionally filtered by split)
     episodes = sorted(ep for ep in episodes_dir.glob("*")
                       if ep.is_dir() and (ep / "frames.npy").exists())
-    print(f"Found {len(episodes)} episodes (base + shifted)")
+
+    if args.split != "all":
+        from deepdash.data_split import get_val_episodes, is_val_episode
+        val_set = get_val_episodes()
+        if args.split == "val":
+            episodes = [ep for ep in episodes if is_val_episode(ep.name, val_set)]
+        else:
+            episodes = [ep for ep in episodes if not is_val_episode(ep.name, val_set)]
+
+    print(f"Found {len(episodes)} episodes ({args.split})")
 
     def _tokens_valid(path):
         """Check if tokens.npy exists and is not corrupt."""
