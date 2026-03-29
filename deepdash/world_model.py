@@ -606,8 +606,9 @@ class AdaLNTransformerBlock(nn.Module):
                 past_kv=None, use_cache=False, cond=None):
         B, T, D = x.shape
 
-        # AdaLN-Zero modulation from conditioning vector
-        mods = self.adaln_proj(cond)  # (B, 6*D)
+        # AdaLN-Zero modulation from conditioning vector.
+        # Force float32 for scale/shift to prevent FP16 overflow in (1+scale)*x.
+        mods = self.adaln_proj(cond.float()).float()  # (B, 6*D)
         scale1, shift1, gate1, scale2, shift2, gate2 = mods.chunk(6, dim=-1)
         scale1 = scale1.unsqueeze(1)  # (B, 1, D)
         shift1 = shift1.unsqueeze(1)
@@ -616,7 +617,7 @@ class AdaLNTransformerBlock(nn.Module):
         shift2 = shift2.unsqueeze(1)
         gate2 = gate2.unsqueeze(1)
 
-        h = self.ln1(x) * (1 + scale1) + shift1
+        h = (self.ln1(x).float() * (1 + scale1) + shift1).to(x.dtype)
 
         qkv = self.qkv(h).reshape(B, T, 3, self.n_heads, self.head_dim)
         q, k, v = qkv.permute(2, 0, 3, 1, 4)
@@ -646,7 +647,8 @@ class AdaLNTransformerBlock(nn.Module):
         h = self.out_proj(h)
 
         x = x + gate1 * self.resid_drop(h)
-        x = x + gate2 * self.mlp(self.ln2(x) * (1 + scale2) + shift2)
+        h2 = (self.ln2(x).float() * (1 + scale2) + shift2).to(x.dtype)
+        x = x + gate2 * self.mlp(h2)
         return x, present_kv
 
 
