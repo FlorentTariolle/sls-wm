@@ -6,7 +6,9 @@ whether actions visibly affect outcomes.
 
 Controls:
     SPACE / UP  = jump
-    R           = restart (new episode)
+    R           = restart (new episode, human plays)
+    Y           = restart (same episode, controller plays)
+    T           = next episode
     Q / ESC     = quit
 
 Usage:
@@ -31,6 +33,7 @@ except ImportError:
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.fsq import FSQVAE
 from deepdash.world_model import WorldModel
+from deepdash.controller import CNNPolicy
 
 
 def compute_val_set(death_dir, expert_dir):
@@ -111,6 +114,8 @@ def main():
     parser.add_argument("--vae-checkpoint", default="checkpoints/fsq_best.pt")
     parser.add_argument("--transformer-checkpoint",
                         default="checkpoints/transformer_best.pt")
+    parser.add_argument("--controller-checkpoint",
+                        default="checkpoints/controller_ppo_best.pt")
     parser.add_argument("--episodes-dir", default="data/death_episodes")
     parser.add_argument("--expert-episodes-dir", default="data/expert_episodes")
     parser.add_argument("--context-frames", type=int, default=4)
@@ -164,6 +169,21 @@ def main():
     wm.load_state_dict(state)
     wm.eval()
     print("World model loaded")
+
+    # Load controller (for Y = AI replay)
+    controller = None
+    ctrl_path = Path(args.controller_checkpoint)
+    if ctrl_path.exists():
+        controller = CNNPolicy(
+            vocab_size=args.vocab_size, h_dim=args.embed_dim,
+        ).to(device)
+        state = torch.load(ctrl_path, map_location=device, weights_only=True)
+        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+        controller.load_state_dict(state)
+        controller.eval()
+        print("Controller loaded (Y = AI replay)")
+    else:
+        print(f"No controller at {ctrl_path} (Y disabled)")
 
     # Episode loader (lazy: loads current + prefetches next)
     val_set = compute_val_set(args.episodes_dir, args.expert_episodes_dir)
@@ -232,7 +252,8 @@ def main():
     death_prob_val = 0.0
     action = 0
     best_steps = 0
-    print(f"\nControls: SPACE=jump, R=retry, T=next episode, Q=quit")
+    ai_mode = False
+    print(f"\nControls: SPACE=jump, R=retry, Y=AI replay, T=next episode, Q=quit")
     print(f"FPS: {args.fps}\n")
 
     running = True
@@ -247,10 +268,18 @@ def main():
                     ctx_t, ctx_a, frame_img, steps, ep_split = replay_episode()
                     dead = False
                     death_prob_val = 0.0
+                    ai_mode = False
+                if event.key == pygame.K_y and controller is not None:
+                    ctx_t, ctx_a, frame_img, steps, ep_split = replay_episode()
+                    dead = False
+                    death_prob_val = 0.0
+                    ai_mode = True
+                    print("  AI mode: controller playing")
                 if event.key == pygame.K_t:
                     ctx_t, ctx_a, frame_img, steps, ep_split = new_episode()
                     dead = False
                     death_prob_val = 0.0
+                    ai_mode = False
 
         if not running:
             break
@@ -263,6 +292,8 @@ def main():
 
         # HUD (two lines)
         act_str = "JUMP" if action else "idle"
+        if ai_mode:
+            act_str = "AI:" + act_str
         dp_color = (255, 80, 80) if death_prob_val > 0.3 else (80, 255, 80)
         actual_fps = clock.get_fps()
         line1 = font.render(
@@ -286,7 +317,7 @@ def main():
                 txt1 = big_font.render(f"DEAD  step {steps}", True, (255, 50, 50))
             else:
                 txt1 = big_font.render(f"END  step {steps}", True, (200, 200, 200))
-            txt2 = font.render("R = retry  T = next  Q = quit", True, (255, 255, 255))
+            txt2 = font.render("R = retry  Y = AI  T = next  Q = quit", True, (255, 255, 255))
             screen.blit(txt1, (W // 2 - txt1.get_width() // 2, H // 2 - 30))
             screen.blit(txt2, (W // 2 - txt2.get_width() // 2, H // 2 + 20))
             pygame.display.flip()
@@ -296,8 +327,16 @@ def main():
         pygame.display.flip()
 
         # Read action for NEXT step
-        keys = pygame.key.get_pressed()
-        action = 1 if keys[pygame.K_SPACE] else 0
+        if ai_mode:
+            # Controller decides
+            with torch.no_grad():
+                h_t = wm.encode_context(ctx_t, ctx_a)  # (1, D)
+                last_tokens = ctx_t[:, -1, :wm.tokens_per_frame]  # (1, 64)
+                prob, _ = controller(last_tokens, h_t)
+                action = 1 if prob[0].item() > 0.5 else 0
+        else:
+            keys = pygame.key.get_pressed()
+            action = 1 if keys[pygame.K_SPACE] else 0
 
         # World model prediction
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=device.type == "cuda"):
