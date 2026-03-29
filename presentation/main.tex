@@ -661,6 +661,8 @@
     \item \textbf{Vertical shift augmentation}: reduced overfitting, physically valid for side-scrollers
     \item \textbf{Parallel decoding}: all 65 tokens in 1 forward pass vs 65 autoregressive. Critical for real-time play
     \item \textbf{Structured label smoothing}: empirically grounded via FSQ distance analysis
+    \item \textbf{AdaLN-Zero}: action conditioning via adaptive LayerNorm, lowest CPC ever (0.133)
+    \item \textbf{QK-norm}: RMSNorm on Q,K per head, enabled stable AdaLN training (4 runs exploded without it)
   \end{itemize}
 \end{frame}
 
