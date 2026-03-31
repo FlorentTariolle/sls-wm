@@ -27,6 +27,8 @@ slurm/logs/
 *.synctex.gz
 presentation/*.pdf
 paper/*.pdf
+paper/figures/
+docs/pipeline.pdf
 Formatting_Instructions_For_NeurIPS_2026/
 outputs/
 plots/
