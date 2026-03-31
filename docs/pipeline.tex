@@ -23,7 +23,8 @@
 
   \draw[arr] (input) -- (V);
   \draw[arr] (V) -- node[above, lbl] {$\mathbf{z}_t$} node[below, lbl] {\tiny 8$\times$8} (M);
-  \draw[arr] (M) -- node[above, lbl] {$\hat{\mathbf{z}}_t, \mathbf{h}_t$} (C);
+  \draw[arr] (M) -- node[above, lbl] {$\mathbf{h}_t$} (C);
+  \draw[arr] (V.north) -- ++(0,0.6) -| node[above, lbl, pos=0.25] {$\mathbf{z}_t$} (C.north);
   \draw[arr] (C) -- (output);
 
   \draw[arr] (C.south) -- ++(0,-0.6) -| node[below, lbl, pos=0.25] {$a_t$} (M.south);
