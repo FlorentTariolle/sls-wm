@@ -187,7 +187,8 @@
 
   \vspace{0.3em}
   \begin{center}
-    Levels $[8,5,5,5]$ $\Rightarrow$ \fsqcodes{} codes, $\spatialres\times\spatialres$ grid $=$ \textbf{\ntokens{} tokens/frame}
+    Levels $[8,5,5,5]$ $\Rightarrow$ \fsqcodes{} codes\\
+    $\spatialres\times\spatialres$ grid $=$ \textbf{\ntokens{} tokens/frame}
   \end{center}
   % TODO: add before/after reconstruction comparison
 \end{frame}
@@ -377,7 +378,7 @@
     \node[lbl] (in) {$\mathbf{z}_{t-K:t}$, $a_{t-K:t}$\\{\tiny \seqlen{} tokens}};
     \node[block, minimum width=2cm, right=0.6cm of in] (emb) {Token + Action\\Embedding};
     \node[block, minimum width=2cm, right=0.6cm of emb] (rope) {3D-RoPE\\{\tiny row, col, frame}\\{\tiny block-causal}};
-    \node[block, minimum width=2.5cm, right=0.6cm of rope, fill=mcolor!25] (blocks) {\nlayers$\times$ Transformer\\Block (\hdim d, \nheads H)};
+    \node[block, minimum width=2.5cm, right=0.6cm of rope, fill=mcolor!25] (blocks) {\nlayers$\times$ Transformer\\Block (\hdim d, \nheads H)\\{\tiny AdaLN + QK-Norm}};
     \node[block, minimum width=2cm, right=0.6cm of blocks] (head) {Prediction\\Head};
     \node[lbl, right=0.6cm of head] (out1) {$\hat{\mathbf{z}}_{t+1}$, $\hat{d}_{t+1}$\\{\tiny 64 tokens + death}};
 
@@ -554,32 +555,43 @@
 
   \vspace{0.5em}
   \begin{center}
-  \resizebox{0.9\textwidth}{!}{%
+  \hspace*{-0.05\textwidth}%
+  \resizebox{1.1\textwidth}{!}{%
   \begin{tikzpicture}[
     block/.style={rectangle, draw=ccolor, fill=ccolor!10, rounded corners, minimum height=0.9cm, align=center, font=\scriptsize, line width=0.6pt},
     arr/.style={-{Stealth[length=2.5mm]}, thick},
     lbl/.style={font=\tiny, align=center},
   ]
-    \node[block] (emb) {Embed(\fsqcodes, 16)\\{\tiny $\to$ (16, \spatialres, \spatialres)}};
+    \node[lbl] (zt) {$\mathbf{z}_t$};
+    \node[block, right=0.6cm of zt] (emb) {Embed(\fsqcodes, 16)\\{\tiny $\to$ (16, \spatialres, \spatialres)}};
     \node[block, right=0.6cm of emb] (c1) {Conv 32\\MaxPool};
     \node[block, right=0.6cm of c1] (c2) {Conv 64\\MaxPool};
     \node[block, right=0.6cm of c2] (flat) {Flatten\\{\tiny \cnnflat d}};
-    \node[block, fill=mcolor!10, draw=mcolor, above=0.4cm of flat] (ht) {$\mathbf{h}_t$\\{\tiny \hdim d}};
+    \node[lbl, above=0.4cm of flat] (ht) {$\mathbf{h}_t$};
     \node[block, right=1cm of flat] (cat) {Concat\\{\tiny \concatdim d}};
     \node[block, right=0.6cm of cat] (heads) {Actor + Critic};
+    \node[lbl, right=0.6cm of heads] (at) {$a_t$};
 
+    \draw[arr] (zt) -- (emb);
     \draw[arr] (emb) -- (c1);
     \draw[arr] (c1) -- (c2);
     \draw[arr] (c2) -- (flat);
     \draw[arr] (flat) -- (cat);
     \draw[arr] (ht) -| (cat);
     \draw[arr] (cat) -- (heads);
+    \draw[arr] (heads) -- (at);
   \end{tikzpicture}%
   }
   \end{center}
 
   \vspace{0.5em}
-  Inputs: token grid $\mathbf{z}_t \in \{0,\ldots,\fsqcodes-1\}^{\spatialres \times \spatialres}$ + hidden state $\mathbf{h}_t \in \mathbb{R}^{\hdim}$
+  \begin{center}
+    \small
+    \begin{tabular}{c@{\hspace{3em}}c}
+      $\mathbf{z}_t \in \{0,\ldots,\fsqcodes-1\}^{\spatialres \times \spatialres}$: token grid &
+      $\mathbf{h}_t \in \mathbb{R}^{\hdim}$: hidden state
+    \end{tabular}
+  \end{center}
 \end{frame}
 
 \begin{frame}{Controller: Training Protocol}
