@@ -114,8 +114,15 @@ We adopt AdaLN-Zero with QK-norm for action conditioning, finding that QK-norm i
 \label{sec:method}
 % ===========================================================================
 
-Our system follows the Vision-Model-Controller (V-M-C) paradigm~\citep{ha2018world}.
+Our system follows the Vision-Model-Controller (V-M-C) paradigm~\citep{ha2018world} (Figure~\ref{fig:pipeline}).
 We describe each component below, with Structured Label Smoothing (Section~\ref{sec:sls}) as the primary contribution.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/pipeline.pdf}
+  \caption{Vision-Model-Controller pipeline. The FSQ-VAE (V) tokenizes Sobel edge maps into a grid of discrete codes, the causal transformer (M) predicts next-frame tokens conditioned on actions via AdaLN, and the CNN controller (C) selects actions from predicted tokens and hidden states. The action feedback loop enables autoregressive dreaming.}
+  \label{fig:pipeline}
+\end{figure}
 
 % ---------------------------------------------------------------------------
 \subsection{FSQ tokenization (Vision)}
@@ -174,8 +181,15 @@ yielding the structured smooth target:
   \end{cases}
   \label{eq:sls}
 \end{equation}
-The full target matrix $\mathbf{Q} \in \mathbb{R}^{V \times V}$ is precomputed once and stored on GPU.
+The full target matrix $\mathbf{Q} \in \mathbb{R}^{V \times V}$ is precomputed once and stored on GPU (Figure~\ref{fig:sls_kernel}).
 We use $\sigma = \fsqsigma$ and $\varepsilon = \fsqeps$.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\textwidth]{figures/sls_kernel.pdf}
+  \caption{SLS target distribution for token 437 (coordinates $(3,2,2,2)$). \textbf{(a)}~2D slice over dimensions 1--2 with dimensions 0 and 3 fixed at the target's values: weights decay as a Gaussian with FSQ lattice distance. Red square marks the target token. \textbf{(b)}~All 999 alternative tokens sorted by SLS weight (log scale) vs.\ uniform label smoothing. SLS concentrates mass on near-miss tokens while suppressing distant ones.}
+  \label{fig:sls_kernel}
+\end{figure}
 
 \paragraph{Integration with focal loss.}
 To handle class imbalance (background tokens dominate over obstacle and spike tokens), we combine SLS with focal loss~\citep{lin2017focal}:
