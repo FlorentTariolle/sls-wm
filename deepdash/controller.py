@@ -224,23 +224,24 @@ class TransformerPolicy(nn.Module):
 
 
 class CNNPolicy(nn.Module):
-    """CNN actor-critic on 8x8 token grid (IRIS/DIAMOND-style).
+    """CNN + MLP actor-critic on 8x8 token grid.
 
-    Token IDs are embedded into a small learnable space, reshaped to an
-    8x8 feature map, processed by 2 conv layers with MaxPool, then
-    concatenated with h_t for actor/critic heads.
+    Token IDs (z_t) are embedded, reshaped to an 8x8 feature map,
+    processed by 2 conv layers, then concatenated with h_t and fed
+    through a deep MLP trunk before actor/critic heads.
 
-    Architecture (following IRIS/DIAMOND pattern):
-        Embedding(vocab, embed_dim) -> (embed_dim, 8, 8)
-        Conv2d(embed_dim, 32, 3x3) + ReLU + MaxPool(2x2) -> (32, 4, 4)
-        Conv2d(32, 64, 3x3) + ReLU + MaxPool(2x2)        -> (64, 2, 2) = 256
-        concat h_t (256d) -> 512d
+    Architecture:
+        Embedding(vocab, 16) -> (16, 8, 8)
+        Conv2d(16, 32, 3x3) + ReLU + MaxPool(2x2) -> (32, 4, 4)
+        Conv2d(32, 64, 3x3) + ReLU + MaxPool(2x2) -> (64, 2, 2) = 256
+        concat h_t (512d) -> 768d
+        MLP trunk: 3x [Linear(512) + LayerNorm + SiLU]  (TWISTER/DreamerV3-style)
         Actor: Linear(512, 1)   (zero-init)
         Critic: Linear(512, 1)  (zero-init)
     """
 
     def __init__(self, vocab_size=1000, grid_size=8, token_embed_dim=16,
-                 h_dim=384, mtp_steps=8):
+                 h_dim=384, mtp_steps=8, mlp_hidden=512, mlp_layers=3):
         super().__init__()
         self.grid_size = grid_size
         self.mtp_steps = mtp_steps
@@ -254,18 +255,30 @@ class CNNPolicy(nn.Module):
 
         # After 2x MaxPool(2): 8->4->2, so 64*2*2 = 256
         cnn_out = 64 * (grid_size // 4) ** 2  # 256
-        head_input = cnn_out + h_dim  # 512
+        head_input = cnn_out + h_dim
+
+        # Shared MLP trunk (TWISTER/DreamerV3-style: LayerNorm + SiLU)
+        trunk = []
+        in_dim = head_input
+        for _ in range(mlp_layers):
+            trunk.extend([
+                nn.Linear(in_dim, mlp_hidden),
+                nn.LayerNorm(mlp_hidden),
+                nn.SiLU(),
+            ])
+            in_dim = mlp_hidden
+        self.trunk = nn.Sequential(*trunk)
 
         # Actor-critic heads (zero-init like IRIS/DIAMOND)
-        self.actor = nn.Linear(head_input, 1)
-        self.critic = nn.Linear(head_input, 1)
+        self.actor = nn.Linear(mlp_hidden, 1)
+        self.critic = nn.Linear(mlp_hidden, 1)
         nn.init.zeros_(self.actor.weight)
         nn.init.zeros_(self.actor.bias)
         nn.init.zeros_(self.critic.weight)
         nn.init.zeros_(self.critic.bias)
 
         # Multi-token prediction: predict next mtp_steps actions from features
-        self.mtp_head = nn.Linear(head_input, mtp_steps)
+        self.mtp_head = nn.Linear(mlp_hidden, mtp_steps)
         nn.init.zeros_(self.mtp_head.weight)
         nn.init.zeros_(self.mtp_head.bias)
 
@@ -276,7 +289,7 @@ class CNNPolicy(nn.Module):
             token_ids: (B, 64) long, FSQ token IDs.
             h_t: (B, h_dim) float, world model hidden state.
         Returns:
-            features: (B, 512)
+            features: (B, mlp_hidden)
         """
         B = token_ids.shape[0]
         G = self.grid_size
@@ -290,8 +303,9 @@ class CNNPolicy(nn.Module):
         x = F.relu(F.max_pool2d(self.conv2(x), 2))    # (B, 64, 2, 2)
         x = x.flatten(1)                               # (B, 256)
 
-        # Concat with temporal context
-        return torch.cat([x, h_t], dim=1)               # (B, 512)
+        # Concat with temporal context, then MLP trunk
+        x = torch.cat([x, h_t], dim=1)                 # (B, 256 + h_dim)
+        return self.trunk(x)                            # (B, mlp_hidden)
 
     def forward(self, token_ids, h_t):
         """Jump probability and value estimate.
