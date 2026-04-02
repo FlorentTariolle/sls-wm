@@ -77,7 +77,7 @@ def sample_contexts(episodes, n, context_frames, rng):
 
 def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
                   max_steps, death_threshold, device, warmup_steps,
-                  jump_penalty=0.0):
+                  jump_penalty=0.0, amp_dtype=torch.bfloat16):
     """Roll out dreams and cache data for PPO updates.
 
     Hard death cutoff: rollout ends for an episode when death_prob > threshold.
@@ -353,7 +353,7 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
 
 
 def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
-                    max_steps, death_threshold, device):
+                    max_steps, death_threshold, device, amp_dtype=torch.bfloat16):
     """Run deterministic evaluation on fixed pre-sampled contexts."""
     m = _unwrap(model)
     B = ctx_tokens_np.shape[0]
@@ -596,7 +596,7 @@ def main():
         with torch.no_grad():
             bc_surv, bc_jr = evaluate_fixed(
                 model, controller, fixed_eval_tokens, fixed_eval_actions,
-                args.max_dream_steps, args.death_threshold, device)
+                args.max_dream_steps, args.death_threshold, device, amp_dtype)
         writer.writerow([
             0, "", "", "", "", "", f"{optimizer.param_groups[0]['lr']:.1e}",
             f"{bc_surv:.2f}", f"{bc_jr:.2f}", "0.0"])
@@ -618,7 +618,8 @@ def main():
             death_threshold=args.death_threshold,
             device=device,
             warmup_steps=args.context_frames,
-            jump_penalty=args.jump_penalty)
+            jump_penalty=args.jump_penalty,
+            amp_dtype=amp_dtype)
 
         if rollout is None:
             print(f"Iter {iteration}: all died during warmup, skipping")
@@ -655,7 +656,7 @@ def main():
             with torch.no_grad():
                 es, jr = evaluate_fixed(
                     model, controller, fixed_eval_tokens, fixed_eval_actions,
-                    args.max_dream_steps, args.death_threshold, device)
+                    args.max_dream_steps, args.death_threshold, device, amp_dtype)
             eval_surv = f"{es:.2f}"
             jump_ratio_str = f"{jr:.2f}"
 
