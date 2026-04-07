@@ -36,7 +36,8 @@ def wandb_init(project="deepdash", name=None, config=None, enabled=True,
                 if 'int' in t and not isinstance(v, bool): return int(v)
                 if isinstance(v, list): return [_to_native(x) for x in v]
                 return v
-            config = {k: _to_native(v) for k, v in config.items()}
+            config = {k: _to_native(v) for k, v in config.items()
+                      if k != 'config'}
         kwargs = dict(project=project, name=name, config=config)
         if resume_id:
             kwargs["id"] = resume_id
