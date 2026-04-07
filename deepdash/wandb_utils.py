@@ -32,7 +32,7 @@ def wandb_init(project="deepdash", name=None, config=None, enabled=True,
         kwargs = dict(project=project, name=name, config=config)
         if resume_id:
             kwargs["id"] = resume_id
-            kwargs["resume"] = "must"
+            kwargs["resume"] = "allow"
         _run = wandb.init(**kwargs)
         _enabled = True
         print(f"W&B logging enabled: {_run.url}")
