@@ -50,10 +50,10 @@ def wandb_run_id():
     return None
 
 
-def wandb_log(data):
+def wandb_log(data, step=None):
     """Log metrics. No-op if wandb unavailable."""
     if _enabled and _run is not None:
-        _run.log(data)
+        _run.log(data, step=step or data.get("iteration"))
 
 
 def wandb_finish():
