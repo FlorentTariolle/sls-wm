@@ -29,19 +29,14 @@ def wandb_init(project="deepdash", name=None, config=None, enabled=True,
         return None
     try:
         import wandb
-        if config:
-            def _to_native(v):
-                t = type(v).__name__
-                if 'float' in t: return float(v)
-                if 'int' in t and not isinstance(v, bool): return int(v)
-                if isinstance(v, list): return [_to_native(x) for x in v]
-                return v
-            config = {k: _to_native(v) for k, v in config.items()
-                      if k != 'config'}
-        kwargs = dict(project=project, name=name, config=config)
+        kwargs = dict(project=project, name=name)
         if resume_id:
             kwargs["id"] = resume_id
             kwargs["resume"] = "allow"
+            # Config already on server for resumed runs; skip to
+            # avoid numpy type serialization issues with W&B.
+        else:
+            kwargs["config"] = config
         _run = wandb.init(**kwargs)
         _enabled = True
         print(f"W&B logging enabled: {_run.url}")
