@@ -323,13 +323,13 @@ class CNNPolicy(nn.Module):
         return prob, value
 
     def predict_future_actions(self, token_ids, h_t):
-        """Predict next mtp_steps action probabilities.
+        """Predict next mtp_steps action logits.
 
         Returns:
-            mtp_probs: (B, mtp_steps) jump probabilities for next steps
+            mtp_logits: (B, mtp_steps) jump logits for next steps
         """
         features = self._encode(token_ids, h_t)
-        return self.mtp_head(features).sigmoid()
+        return self.mtp_head(features)
 
     def act(self, token_ids, h_t):
         """Sample action from Bernoulli policy.

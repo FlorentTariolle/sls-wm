@@ -317,10 +317,10 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             entropy_loss = -entropy_coeff * entropy.mean()
 
             # MTP auxiliary loss: predict future actions
-            mtp_probs = controller.predict_future_actions(
+            mtp_logits = controller.predict_future_actions(
                 mb_token_ids, mb_h_t)
-            mtp_loss = F.binary_cross_entropy(
-                mtp_probs, mb_mtp_targets, reduction='mean')
+            mtp_loss = F.binary_cross_entropy_with_logits(
+                mtp_logits, mb_mtp_targets, reduction='mean')
 
             loss = actor_loss + critic_coeff * critic_loss + \
                 entropy_loss + mtp_coeff * mtp_loss
