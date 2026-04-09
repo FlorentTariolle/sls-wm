@@ -29,6 +29,7 @@
 \newcommand{\fsqdimweights}{[1.29, 0.85, 0.97, 0.89]}
 \newcommand{\focalgamma}{2.0}
 \newcommand{\nparams}{35\text{M}}
+\newcommand{\ctrlparams}{\sim\!966\text{K}}
 
 \title{Structured Label Smoothing over Finite Scalar Quantization\\for Real-Time World Models}
 
@@ -138,7 +139,7 @@ The encoder applies three stride-2 convolutional blocks with residual connection
 Each spatial position is independently quantized by applying $\tanh$, scaling to half-levels, and rounding, yielding $\ntokens$ tokens per frame.
 The decoder mirrors the encoder with transposed convolutions.
 
-Training minimizes MSE reconstruction loss with two regularizers from \citet{wang2020uniformity}: temporal slowness ($\lambda_\text{slow} = 0.1$) encouraging smooth latent trajectories across consecutive frames, and a uniformity loss ($\lambda_\text{unif} = 0.01$) preventing representational collapse.
+Training minimizes MSE reconstruction loss with two regularizers: temporal slowness~\citep{huh2023grwm} ($\lambda_\text{slow} = 0.1$) encouraging smooth latent trajectories across consecutive frames, and a uniformity loss~\citep{wang2020uniformity} ($\lambda_\text{unif} = 0.01$) preventing representational collapse.
 The FSQ-VAE achieves full codebook utilization ($\vocabsize / \vocabsize$ active codes, perplexity 766), reflecting non-uniform but well-spread usage across the codebook.
 
 % ---------------------------------------------------------------------------
@@ -217,7 +218,7 @@ All target-frame tokens are replaced with a learnable \texttt{[MASK]} embedding 
 
 \paragraph{3D Rotary Position Embedding.}
 We apply factored RoPE~\citep{su2024rope} encoding three positional axes: spatial row, spatial column, and temporal frame index.
-The head dimension (64) is partitioned into three bands (22 row, 22 column, 20 time) with separate base frequencies ($\theta_\text{spatial} = 10$, $\theta_\text{time} = 10{,}000$).
+The head dimension (64) is partitioned into three bands (20 row, 20 column, 24 time) with separate base frequencies ($\theta_\text{spatial} = 10$, $\theta_\text{time} = 10{,}000$).
 Status tokens receive the grid center coordinates $(3.5, 3.5)$ to represent whole-frame summaries.
 
 \paragraph{Block-causal attention.}
@@ -257,9 +258,9 @@ The controller is a lightweight CNN that takes the predicted next-frame tokens a
 
 \paragraph{Architecture.}
 Token IDs are embedded (16-dim), reshaped to a $16 \times \gridsize$ feature map, and processed by two convolutional layers with max-pooling, producing a 256-dim feature vector.
-This is concatenated with the 256-dim transformer hidden state (projected from $\hdim$) and fed to separate actor and critic heads.
+This is concatenated with the $\hdim$-dim transformer hidden state and fed through a three-layer MLP trunk (512 hidden units, LayerNorm, SiLU) to separate actor and critic heads.
 An auxiliary multi-token prediction head predicts the next 8 actions.
-The full controller has approximately 40K parameters.
+The full controller has $\ctrlparams$ parameters.
 
 \paragraph{Training in dreams.}
 The controller is first pretrained via behavioral cloning on expert demonstrations, then fine-tuned with PPO~\citep{schulman2017ppo} in dreamed rollouts.
