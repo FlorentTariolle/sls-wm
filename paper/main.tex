@@ -68,6 +68,10 @@ Label smoothing~\citep{szegedy2016rethinking} is a well-known regularizer that r
 We observe that for FSQ-tokenized world models, the uniform assumption is suboptimal: a token one lattice step away from the target is a near-miss, while a token at the opposite corner of the codebook is a gross error.
 We propose \emph{Structured Label Smoothing} (SLS), which replaces the uniform component with a Gaussian kernel over FSQ coordinate distances, calibrated by per-dimension sensitivity weights derived from empirical patch reconstruction error.
 
+This can be viewed as part of a broader shift from data-agnostic heuristics to structure derived from learned representations, analogous to how learned strided convolutions replaced fixed max-pooling for spatial downsampling~\citep{springenberg2015striving}.
+Uniform label smoothing treats the label space as structureless; SLS recovers the metric that the quantizer has already learned.
+Unlike knowledge distillation, which requires a separate teacher model to produce soft targets, SLS exploits geometry already present in the FSQ codebook at no additional cost.
+
 We evaluate SLS within a complete Vision-Model-Controller (V-M-C) pipeline for Geometry Dash, a fast-paced platformer that demands frame-accurate predictions under a 33\,ms latency budget.
 Our system consists of three components: (1)~an FSQ tokenizer that encodes $\imgsize$ Sobel edge maps into $\gridsize$ grids of discrete tokens, (2)~a $\nparams$-parameter causal transformer with Adaptive Layer Normalization (AdaLN-Zero) for action conditioning~\citep{peebles2023dit} and QK-norm for attention stability~\citep{esser2024sd3}, and (3)~a lightweight CNN controller trained via PPO entirely in dreamed rollouts~\citep{schulman2017ppo}.
 The full pipeline achieves real-time inference at 30\,FPS on consumer hardware.
