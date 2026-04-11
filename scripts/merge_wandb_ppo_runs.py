@@ -30,25 +30,23 @@ def fetch():
     api = wandb.Api()
 
     def fetch_run(run_path):
-        """Fetch and deduplicate a W&B run's history."""
+        """Fetch a W&B run's full history via run.history()."""
         run = api.run(run_path)
         print(f"  {run.name} ({run.id})")
-        # Merge rows with same iteration (train + eval logged separately)
+        n_samples = run.lastHistoryStep + 1
+        df = run.history(samples=max(n_samples, 1000), pandas=True)
+        df = df.dropna(subset=["iteration"])
+        # Keep only metric columns, drop wandb internals
+        keep = [c for c in df.columns if not c.startswith("_")]
         by_iter = {}
-        for row in run.scan_history(page_size=10000):
-            it = row.get("iteration")
-            if it is None:
-                continue
+        for _, row in df[keep].iterrows():
+            it = int(row["iteration"])
             if it not in by_iter:
                 by_iter[it] = {}
             for k, v in row.items():
-                if k.startswith("_"):
-                    continue
-                if v is None:
-                    continue
                 if isinstance(v, float) and math.isnan(v):
                     continue
-                by_iter[it][k] = v
+                by_iter[it][k] = int(v) if k == "iteration" else v
         rows = sorted(by_iter.values(), key=lambda r: r["iteration"])
         return run, rows
 
