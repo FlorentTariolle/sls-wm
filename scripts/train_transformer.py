@@ -312,13 +312,13 @@ def val_epoch(model, loader, device, label_smoothing=0.0, focal_gamma=2.0,
         with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
             logits, cpc_loss = model(frame_tokens, actions)
 
-        token_loss = focal_cross_entropy(
-            logits.reshape(-1, logits.size(-1)),
-            target.reshape(-1),
-            gamma=focal_gamma,
-            soft_target_matrix=soft_target_matrix,
-            label_smoothing=label_smoothing,
-        )
+            token_loss = focal_cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                target.reshape(-1),
+                gamma=focal_gamma,
+                soft_target_matrix=soft_target_matrix,
+                label_smoothing=label_smoothing,
+            )
 
         bs = frame_tokens.size(0)
         total_loss += token_loss.item() * bs
