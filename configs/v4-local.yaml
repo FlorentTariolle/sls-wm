@@ -88,7 +88,7 @@ controller_ppo:
   max_grad_norm: 0.5
   max_dream_steps: 45
   death_threshold: 0.5
-  token_embed_dim: 16
+  mlp_hidden: 512
   n_eval_episodes: 128
   eval_interval: 10
   seed: 42

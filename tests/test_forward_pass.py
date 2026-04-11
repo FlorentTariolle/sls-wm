@@ -117,37 +117,26 @@ class TestWorldModel:
         assert h_t.shape == (1, 512)
 
 
-class TestCNNPolicy:
+class TestMLPPolicy:
     """Tests use V4 architecture: h_dim=512 matching world model embed_dim."""
 
     def test_forward_shape(self, device, seed):
-        from deepdash.controller import CNNPolicy
-        policy = CNNPolicy(vocab_size=1000, h_dim=512).to(device).eval()
-        tokens = torch.randint(0, 1000, (2, 64), device=device)
+        from deepdash.controller import MLPPolicy
+        policy = MLPPolicy(h_dim=512).to(device).eval()
         h_t = torch.randn(2, 512, device=device)
         with torch.no_grad():
-            prob, value = policy(tokens, h_t)
+            prob, value = policy(h_t)
         assert prob.shape == (2,)
         assert value.shape == (2,)
         assert (prob >= 0).all() and (prob <= 1).all()
 
-    def test_mtp_shape(self, device, seed):
-        from deepdash.controller import CNNPolicy
-        policy = CNNPolicy(vocab_size=1000, h_dim=512, mtp_steps=8).to(device).eval()
-        tokens = torch.randint(0, 1000, (2, 64), device=device)
-        h_t = torch.randn(2, 512, device=device)
-        with torch.no_grad():
-            mtp = policy.predict_future_actions(tokens, h_t)
-        assert mtp.shape == (2, 8)
-
     def test_act_deterministic(self, device, seed):
-        from deepdash.controller import CNNPolicy
-        policy = CNNPolicy(vocab_size=1000, h_dim=512).to(device).eval()
-        tokens = torch.randint(0, 1000, (1, 64), device=device)
+        from deepdash.controller import MLPPolicy
+        policy = MLPPolicy(h_dim=512).to(device).eval()
         h_t = torch.randn(1, 512, device=device)
         with torch.no_grad():
-            a1 = policy.act_deterministic(tokens, h_t)
-            a2 = policy.act_deterministic(tokens, h_t)
+            a1 = policy.act_deterministic(h_t)
+            a2 = policy.act_deterministic(h_t)
         assert torch.equal(a1, a2)
 
 

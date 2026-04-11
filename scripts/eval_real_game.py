@@ -27,7 +27,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.fsq import FSQVAE
 from deepdash.world_model import WorldModel
-from deepdash.controller import CNNPolicy
+from deepdash.controller import MLPPolicy
 from deepdash.gd_mem import GDMemReader
 
 
@@ -108,7 +108,7 @@ def main():
     wm.load_state_dict(state)
     wm.eval()
 
-    controller = CNNPolicy(vocab_size=args.vocab_size, h_dim=args.embed_dim).to(device)
+    controller = MLPPolicy(h_dim=args.embed_dim).to(device)
     state = torch.load(args.controller_checkpoint, map_location=device,
                        weights_only=True)
     controller.load_state_dict(state)
@@ -203,8 +203,7 @@ def main():
                 h_t = wm.encode_context(ctx_t, ctx_a)
 
             with torch.no_grad():
-                current_tokens = torch.from_numpy(tokens_flat).unsqueeze(0).to(device)
-                prob, _ = controller(current_tokens, h_t.float())
+                prob, _ = controller(h_t.float())
                 jump = prob[0].item() > args.jump_threshold
 
             if jump and not jumping:

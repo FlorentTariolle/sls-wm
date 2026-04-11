@@ -1,8 +1,8 @@
-"""Behavioral cloning: pretrain CNNPolicy on expert episodes.
+"""Behavioral cloning: pretrain MLPPolicy on expert episodes.
 
 For each frame in expert episodes, feeds context through the world model
 to get h_t, then trains the controller to predict the expert's action
-given (token_ids, h_t) with binary cross-entropy.
+given h_t with binary cross-entropy.
 
 Usage:
     python scripts/train_controller_bc.py
@@ -23,7 +23,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish
 from deepdash.world_model import WorldModel
-from deepdash.controller import CNNPolicy
+from deepdash.controller import MLPPolicy
 
 
 def _unwrap(model):
@@ -222,14 +222,14 @@ def main():
     print(f"Jump class weight: {pos_weight.item():.2f}x (data ratio: {(1-jump_ratio)/jump_ratio:.2f}x)")
 
     # Initialize controller
-    controller = CNNPolicy(vocab_size=args.vocab_size, h_dim=args.embed_dim).to(device)
+    controller = MLPPolicy(h_dim=args.embed_dim).to(device)
     optimizer = torch.optim.AdamW(controller.parameters(),
                                   lr=args.lr, weight_decay=args.weight_decay)
     scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=args.epochs, eta_min=args.lr * 0.01)
 
     n_params = sum(p.numel() for p in controller.parameters())
-    print(f"CNNPolicy: {n_params:,} parameters")
+    print(f"MLPPolicy: {n_params:,} parameters")
 
     # Logging
     ckpt_dir = Path(args.checkpoint_dir)
@@ -259,7 +259,7 @@ def main():
             h_t = all_h_t[idx].to(device)
             actions = all_target_actions[idx].to(device)
 
-            features = controller._encode(tokens, h_t)
+            features = controller._encode(h_t)
             logits = controller.actor(features).squeeze(-1)
             loss = F.binary_cross_entropy_with_logits(
                 logits, actions, pos_weight=pos_weight)
@@ -291,7 +291,7 @@ def main():
                 h_t = all_h_t[idx].to(device)
                 actions = all_target_actions[idx].to(device)
 
-                features = controller._encode(tokens, h_t)
+                features = controller._encode(h_t)
                 logits = controller.actor(features).squeeze(-1)
                 loss = F.binary_cross_entropy_with_logits(
                     logits, actions, pos_weight=pos_weight)

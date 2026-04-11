@@ -1,7 +1,7 @@
 """Train controller via PPO in dream rollouts.
 
-CNN actor-critic policy on 8x8 token grid. PPO reuses dream rollout
-data for multiple gradient updates via clipped surrogate objective.
+MLP actor-critic policy on h_t. PPO reuses dream rollout data for
+multiple gradient updates via clipped surrogate objective.
 GAE advantages, survival reward.
 
 Usage:
@@ -25,7 +25,7 @@ import torch.nn.functional as F
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.world_model import WorldModel
-from deepdash.controller import CNNPolicy
+from deepdash.controller import MLPPolicy
 
 
 def load_episodes(episodes_dir, context_frames):
@@ -98,7 +98,6 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
     survival = torch.zeros(B, dtype=torch.float32, device=device)
 
     # Cached data for PPO
-    all_token_ids = []       # (T, B, 64)
     all_h_t = []             # (T, B, 256)
     all_actions = []         # (T, B)
     all_old_log_probs = []   # (T, B)
@@ -119,12 +118,10 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         survival += alive.float()
 
         with torch.no_grad():
-            action, log_prob, _, value = controller.act(
-                pred_tokens, h_t.float())
+            action, log_prob, _, value = controller.act(h_t.float())
 
         if step >= warmup_steps:
             alive_mask = alive.float()
-            all_token_ids.append(pred_tokens)
             all_h_t.append(h_t.float())
             all_actions.append(action)
             all_old_log_probs.append(log_prob)
@@ -145,7 +142,6 @@ def dream_rollout(model, controller, ctx_tokens_np, ctx_actions_np,
         return None, survival
 
     rollout = {
-        'token_ids': torch.stack(all_token_ids),         # (T, B, 64)
         'h_t': torch.stack(all_h_t),                     # (T, B, 256)
         'actions': torch.stack(all_actions),              # (T, B)
         'old_log_probs': torch.stack(all_old_log_probs),  # (T, B)
@@ -211,12 +207,8 @@ class PercentileNormalizer:
 def ppo_update(controller, optimizer, rollout, advantages, returns,
                clip_eps=0.2, entropy_coeff=0.01, critic_coeff=0.5,
                max_grad_norm=0.5, n_epochs=4, minibatch_size=None,
-               pct_normalizer=None, ema_controller=None, ema_decay=0.98,
-               mtp_coeff=0.1):
-    """PMPO + MTP update with multiple epochs on cached rollout data.
-
-    Uses PMPO (sign-based advantages) instead of clipped PPO objective.
-    Adds multi-token prediction auxiliary loss for better timing.
+               pct_normalizer=None, ema_controller=None, ema_decay=0.98):
+    """PPO update with multiple epochs on cached rollout data.
 
     Returns:
         mean_loss, mean_entropy, mean_value
@@ -232,24 +224,12 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
         pct_normalizer.update(returns.reshape(-1))
 
     # Flatten rollout for minibatch sampling
-    token_ids_flat = rollout['token_ids'].reshape(N, -1)
     h_t_flat = rollout['h_t'].reshape(N, -1)
     actions_flat = rollout['actions'].reshape(N)
     old_log_probs_flat = rollout['old_log_probs'].reshape(N)
     advantages_flat = advantages.reshape(N)
     returns_flat = returns.reshape(N)
     alive_flat = rollout['alive_masks'].reshape(N)
-
-    # Build MTP targets: for each transition at time t, the future actions
-    # at t+1, t+2, ..., t+L-1 (padded with 0 if out of bounds)
-    L = controller.mtp_steps
-    actions_seq = rollout['actions']  # (T, B)
-    mtp_targets = torch.zeros(T, B, L, device=actions_flat.device)
-    for k in range(L):
-        end = T - k
-        if end > 0:
-            mtp_targets[:end, :, k] = actions_seq[k:k + end]
-    mtp_targets_flat = mtp_targets.reshape(N, L)
 
     # Only train on alive transitions
     alive_idx = alive_flat.nonzero(as_tuple=True)[0]
@@ -267,15 +247,13 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
         for start in range(0, len(perm), minibatch_size):
             idx = perm[start:start + minibatch_size]
 
-            mb_token_ids = token_ids_flat[idx]
             mb_h_t = h_t_flat[idx]
             mb_actions = actions_flat[idx]
             mb_advantages = advantages_flat[idx]
             mb_returns = returns_flat[idx]
-            mb_mtp_targets = mtp_targets_flat[idx]
 
             # Forward pass with current policy
-            prob, value = controller(mb_token_ids, mb_h_t)
+            prob, value = controller(mb_h_t)
             prob = prob.clamp(1e-6, 1 - 1e-6)
             dist = torch.distributions.Bernoulli(probs=prob)
             log_prob = dist.log_prob(mb_actions.float())
@@ -298,14 +276,7 @@ def ppo_update(controller, optimizer, rollout, advantages, returns,
             # Entropy bonus
             entropy_loss = -entropy_coeff * entropy.mean()
 
-            # MTP auxiliary loss: predict future actions
-            mtp_logits = controller.predict_future_actions(
-                mb_token_ids, mb_h_t)
-            mtp_loss = F.binary_cross_entropy_with_logits(
-                mtp_logits, mb_mtp_targets, reduction='mean')
-
-            loss = actor_loss + critic_coeff * critic_loss + \
-                entropy_loss + mtp_coeff * mtp_loss
+            loss = actor_loss + critic_coeff * critic_loss + entropy_loss
 
             # Skip NaN updates
             if torch.isnan(loss) or torch.isinf(loss):
@@ -361,7 +332,7 @@ def evaluate_fixed(model, controller, ctx_tokens_np, ctx_actions_np,
         alive &= ~died
         survival += alive.float()
 
-        action = controller.act_deterministic(pred_tokens, h_t.float())
+        action = controller.act_deterministic(h_t.float())
         total_jumps += (action[alive] == 1).sum().item()
         total_actions += alive.sum().item()
 
@@ -401,8 +372,6 @@ def main():
     parser.add_argument("--jump-penalty", type=float, default=0.2,
                         help="Per-jump reward penalty to discourage over-jumping")
     parser.add_argument("--context-frames", type=int, default=None)
-    # Policy architecture (CNN)
-    parser.add_argument("--token-embed-dim", type=int, default=None)
     # World model architecture (defaults from configs/v3.yaml)
     parser.add_argument("--config", default=None)
     parser.add_argument("--vocab-size", type=int, default=None)
@@ -481,12 +450,10 @@ def main():
         print("No tokenized episodes found.")
         return
 
-    # CNN actor-critic policy on 8x8 token grid
-    controller = CNNPolicy(
-        vocab_size=args.vocab_size,
-        grid_size=int(args.tokens_per_frame ** 0.5),
-        token_embed_dim=args.token_embed_dim,
+    # MLP actor-critic policy on h_t
+    controller = MLPPolicy(
         h_dim=args.embed_dim,
+        mlp_hidden=getattr(args, 'mlp_hidden', 512),
     ).to(device)
     if args.pretrained:
         state = torch.load(args.pretrained, map_location=device,
@@ -494,7 +461,7 @@ def main():
         controller.load_state_dict(state)
         print(f"Loaded pretrained controller from {args.pretrained}")
     n_params = sum(p.numel() for p in controller.parameters())
-    print(f"Controller: CNNPolicy embed={args.token_embed_dim} "
+    print(f"Controller: MLPPolicy h_dim={args.embed_dim} "
           f"({n_params:,} params, actor-critic)")
 
     import copy

@@ -3,13 +3,12 @@
 CMA-ES Controller: numpy-based, for evolutionary optimization.
 PolicyController: nn.Module MLP, for Reinforce policy gradient training.
 TransformerPolicy: ViT encoder (DART-style), sees individual tokens with positions.
-CNNPolicy: CNN on 8x8 token grid (IRIS/DIAMOND-style), actor-critic.
+MLPPolicy: MLP on h_t (TWISTER/DreamerV3-style), actor-critic.
 """
 
 import numpy as np
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
 class Controller:
@@ -223,51 +222,26 @@ class TransformerPolicy(nn.Module):
         return (prob > 0.5).long()
 
 
-class CNNPolicy(nn.Module):
-    """CNN + MLP actor-critic on 8x8 token grid.
+class MLPPolicy(nn.Module):
+    """MLP actor-critic on world model hidden state.
 
-    Token IDs (z_t) are embedded, reshaped to an 8x8 feature map,
-    processed by 2 conv layers, then concatenated with h_t and fed
-    through a deep MLP trunk before actor/critic heads.
+    Pure MLP on h_t (TWISTER/DreamerV3-style). The transformer's hidden
+    state already encodes spatial and temporal information after 8 layers
+    of block-causal attention -- no CNN needed.
 
     Architecture:
-        Embedding(vocab, 16) -> (16, 8, 8)
-        Conv2d(16, 32, 3x3) + ReLU + MaxPool(2x2) -> (32, 4, 4)
-        Conv2d(32, 64, 3x3) + ReLU + MaxPool(2x2) -> (64, 2, 2) = 256
-        concat h_t (512d) -> 768d
-        MLP trunk: 3x [Linear(512) + LayerNorm + SiLU]  (TWISTER/DreamerV3-style)
+        h_t (512d) -> Linear(512) + LayerNorm + SiLU
         Actor: Linear(512, 1)   (zero-init)
         Critic: Linear(512, 1)  (zero-init)
     """
 
-    def __init__(self, vocab_size=1000, grid_size=8, token_embed_dim=16,
-                 h_dim=384, mtp_steps=8, mlp_hidden=512, mlp_layers=3):
+    def __init__(self, h_dim=384, mlp_hidden=512):
         super().__init__()
-        self.grid_size = grid_size
-        self.mtp_steps = mtp_steps
-
-        # Learnable token embedding (separate from world model's)
-        self.token_embed = nn.Embedding(vocab_size, token_embed_dim)
-
-        # CNN on (token_embed_dim, 8, 8)
-        self.conv1 = nn.Conv2d(token_embed_dim, 32, 3, stride=1, padding=1)
-        self.conv2 = nn.Conv2d(32, 64, 3, stride=1, padding=1)
-
-        # After 2x MaxPool(2): 8->4->2, so 64*2*2 = 256
-        cnn_out = 64 * (grid_size // 4) ** 2  # 256
-        head_input = cnn_out + h_dim
-
-        # Shared MLP trunk (TWISTER/DreamerV3-style: LayerNorm + SiLU)
-        trunk = []
-        in_dim = head_input
-        for _ in range(mlp_layers):
-            trunk.extend([
-                nn.Linear(in_dim, mlp_hidden),
-                nn.LayerNorm(mlp_hidden),
-                nn.SiLU(),
-            ])
-            in_dim = mlp_hidden
-        self.trunk = nn.Sequential(*trunk)
+        self.trunk = nn.Sequential(
+            nn.Linear(h_dim, mlp_hidden),
+            nn.LayerNorm(mlp_hidden),
+            nn.SiLU(),
+        )
 
         # Actor-critic heads (zero-init like IRIS/DIAMOND)
         self.actor = nn.Linear(mlp_hidden, 1)
@@ -277,61 +251,31 @@ class CNNPolicy(nn.Module):
         nn.init.zeros_(self.critic.weight)
         nn.init.zeros_(self.critic.bias)
 
-        # Multi-token prediction: predict next mtp_steps actions from features
-        self.mtp_head = nn.Linear(mlp_hidden, mtp_steps)
-        nn.init.zeros_(self.mtp_head.weight)
-        nn.init.zeros_(self.mtp_head.bias)
-
-    def _encode(self, token_ids, h_t):
-        """Encode token grid + h_t into shared representation.
+    def _encode(self, h_t):
+        """Encode h_t into shared representation.
 
         Args:
-            token_ids: (B, 64) long, FSQ token IDs.
             h_t: (B, h_dim) float, world model hidden state.
         Returns:
             features: (B, mlp_hidden)
         """
-        B = token_ids.shape[0]
-        G = self.grid_size
+        return self.trunk(h_t)
 
-        # Embed tokens and reshape to spatial grid
-        x = self.token_embed(token_ids)          # (B, 64, embed_dim)
-        x = x.permute(0, 2, 1).reshape(B, -1, G, G)  # (B, embed_dim, 8, 8)
-
-        # CNN
-        x = F.relu(F.max_pool2d(self.conv1(x), 2))    # (B, 32, 4, 4)
-        x = F.relu(F.max_pool2d(self.conv2(x), 2))    # (B, 64, 2, 2)
-        x = x.flatten(1)                               # (B, 256)
-
-        # Concat with temporal context, then MLP trunk
-        x = torch.cat([x, h_t], dim=1)                 # (B, 256 + h_dim)
-        return self.trunk(x)                            # (B, mlp_hidden)
-
-    def forward(self, token_ids, h_t):
+    def forward(self, h_t):
         """Jump probability and value estimate.
 
         Args:
-            token_ids: (B, 64) long.
             h_t: (B, h_dim) float.
         Returns:
             prob: (B,) jump probability
             value: (B,) state value estimate
         """
-        features = self._encode(token_ids, h_t)
+        features = self._encode(h_t)
         prob = self.actor(features).squeeze(-1).sigmoid()
         value = self.critic(features).squeeze(-1)
         return prob, value
 
-    def predict_future_actions(self, token_ids, h_t):
-        """Predict next mtp_steps action logits.
-
-        Returns:
-            mtp_logits: (B, mtp_steps) jump logits for next steps
-        """
-        features = self._encode(token_ids, h_t)
-        return self.mtp_head(features)
-
-    def act(self, token_ids, h_t):
+    def act(self, h_t):
         """Sample action from Bernoulli policy.
 
         Returns:
@@ -340,12 +284,12 @@ class CNNPolicy(nn.Module):
             entropy: (B,)
             value: (B,)
         """
-        prob, value = self.forward(token_ids, h_t)
+        prob, value = self.forward(h_t)
         dist = torch.distributions.Bernoulli(probs=prob)
         action = dist.sample()
         return action.long(), dist.log_prob(action), dist.entropy(), value
 
-    def act_deterministic(self, token_ids, h_t):
+    def act_deterministic(self, h_t):
         """Greedy action for evaluation."""
-        prob, _ = self.forward(token_ids, h_t)
+        prob, _ = self.forward(h_t)
         return (prob > 0.5).long()

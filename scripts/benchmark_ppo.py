@@ -18,7 +18,7 @@ import torch
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.world_model import WorldModel
-from deepdash.controller import CNNPolicy
+from deepdash.controller import MLPPolicy
 from deepdash.config import apply_config
 
 
@@ -35,7 +35,7 @@ def run_dream_rollout(wm, ctrl, n_episodes, max_steps, device, dtype_ctx=None):
         with ctx_mgr:
             for step in range(max_steps):
                 pred, dp, h_t = wm.predict_next_frame(ctx, acts, return_hidden=True)
-                prob, val = ctrl(pred, h_t)
+                prob, val = ctrl(h_t)
 
                 new_action = (prob > 0.5).long()
                 alive = torch.full((n_episodes, 1), wm.ALIVE_TOKEN,
@@ -103,7 +103,7 @@ def main():
             tokens_per_frame=ns.tokens_per_frame,
             adaln=getattr(ns, 'adaln', False),
         ).to(device).eval()
-        ctrl = CNNPolicy(vocab_size=ns.vocab_size, h_dim=ns.embed_dim).to(device).eval()
+        ctrl = MLPPolicy(h_dim=ns.embed_dim).to(device).eval()
         return wm, ctrl
 
     # Check torch.compile availability

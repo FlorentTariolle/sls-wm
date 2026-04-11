@@ -21,7 +21,7 @@ import torch
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.fsq import FSQVAE
 from deepdash.world_model import WorldModel
-from deepdash.controller import CNNPolicy
+from deepdash.controller import MLPPolicy
 
 
 def tokenize_episode(vae, ep_dir, device, batch_size=64):
@@ -140,7 +140,7 @@ def dream_rollout_visual(model, controller, vae, ctx_tokens_np, ctx_actions_np,
 
         # Controller picks action
         with torch.no_grad():
-            action = controller.act_deterministic(pred_tokens, h_t.float())
+            action = controller.act_deterministic(h_t.float())
         act = action[0].item()
         actions.append(act)
 
@@ -239,7 +239,6 @@ def main():
     parser.add_argument("--n-layers", type=int, default=None)
     parser.add_argument("--tokens-per-frame", type=int, default=None)
     parser.add_argument("--dropout", type=float, default=None)
-    parser.add_argument("--token-embed-dim", type=int, default=None)
     args = parser.parse_args()
 
     from deepdash.config import apply_config
@@ -273,12 +272,7 @@ def main():
 
     # Load controllers
     def load_controller(path):
-        ctrl = CNNPolicy(
-            vocab_size=args.vocab_size,
-            grid_size=int(args.tokens_per_frame ** 0.5),
-            token_embed_dim=args.token_embed_dim,
-            h_dim=args.embed_dim,
-        ).to(device)
+        ctrl = MLPPolicy(h_dim=args.embed_dim).to(device)
         state = torch.load(path, map_location=device, weights_only=True)
         ctrl.load_state_dict(state)
         ctrl.eval()

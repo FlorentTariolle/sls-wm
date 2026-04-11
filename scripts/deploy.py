@@ -31,7 +31,7 @@ import torch
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 from deepdash.fsq import FSQVAE
 from deepdash.world_model import WorldModel
-from deepdash.controller import CNNPolicy
+from deepdash.controller import MLPPolicy
 
 
 # Win32 helpers for topmost window
@@ -151,7 +151,7 @@ def main():
     wm.eval()
 
     print("Loading Controller...")
-    controller = CNNPolicy(vocab_size=args.vocab_size, h_dim=args.embed_dim).to(device)
+    controller = MLPPolicy(h_dim=args.embed_dim).to(device)
     state = torch.load(args.controller_checkpoint, map_location=device,
                        weights_only=True)
     controller.load_state_dict(state)
@@ -315,7 +315,7 @@ def main():
         # --- Controller: decide action ---
         t1 = time.perf_counter()
         with torch.no_grad():
-            prob, _ = controller(tokens.unsqueeze(0), h_t.float())
+            prob, _ = controller(h_t.float())
             jump = prob[0].item() > args.jump_threshold
         t_ctrl = time.perf_counter() - t1
 
