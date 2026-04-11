@@ -36,13 +36,7 @@ echo "$(date): Starting on $(hostname), Job ID: $SLURM_JOB_ID"
 if [ ! -f checkpoints/controller_ppo_latest.pt ]; then
     echo "=== Phase 1: Behavioral Cloning ==="
     python -u scripts/train_controller_bc.py \
-        --expert-episodes-dir data/expert_episodes \
-        --transformer-checkpoint checkpoints/transformer_best.pt \
-        --epochs 50 \
-        --batch-size 512 \
-        --lr 1e-3 \
-        --weight-decay 1e-4 \
-        --val-ratio 0.1 \
+        --config configs/v4.yaml \
         --checkpoint-dir checkpoints \
         --seed 42
 
@@ -66,9 +60,7 @@ if [ -f checkpoints/controller_ppo_latest.pt ]; then
 fi
 
 python -u scripts/train_controller_ppo.py \
-    --transformer-checkpoint checkpoints/transformer_best.pt \
-    --episodes-dir data/death_episodes \
-    --expert-episodes-dir data/expert_episodes \
+    --config configs/v4.yaml \
     --checkpoint-dir checkpoints \
     --seed 42 \
     $PRETRAINED \
