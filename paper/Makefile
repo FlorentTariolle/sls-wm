@@ -11,7 +11,7 @@ figures:
 	cd ../docs && $(TEX) pipeline.tex
 	$(PY) -c "import shutil; shutil.copy('../docs/pipeline.pdf', 'figures/pipeline.pdf')"
 
-$(SRC).pdf: $(SRC).tex references.bib checklist.tex neurips_2026.sty
+$(SRC).pdf: $(SRC).tex references.bib checklist.tex neurips_2026.sty figures/pipeline.pdf figures/sls_kernel.pdf
 	$(TEX) $(SRC)
 	$(BIB) $(SRC)
 	$(TEX) $(SRC)
