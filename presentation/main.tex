@@ -668,7 +668,7 @@
     \item \textbf{Pure RL (CMA-ES)}: $\sim$12 steps (local optimum) $\to$ BC required
     \item \textbf{Death oversample 15$\times$}: memorization (44pp precision gap). Fix: 5$\times$ + expert
     \item \textbf{MaskGIT}: degraded on 64 tokens, parallel single-step better
-    \item \textbf{CNN controller on $\mathbf{z}_t$}: duplicated work the transformer already did. Pure MLP on $\mathbf{h}_t$ trains 2-5$\times$ faster and generalizes better.
+    \item \textbf{CNN controller on $\mathbf{z}_t$}: duplicated work the transformer already did.
   \end{itemize}
 \end{frame}
 
@@ -680,8 +680,6 @@
   \begin{itemize}
     \item \textbf{Controller precision}: jumps too often/early
     \item \textbf{Dream/reality gap}: $\mathbf{h}_t$ distribution differs in real game
-    \item \textbf{Sobel bottleneck}: solved with GPU (7ms vs 10ms CPU)
-    \item \textbf{Token-level augmentation}: impossible post-tokenization
   \end{itemize}
 \end{frame}
 
