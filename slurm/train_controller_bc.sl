@@ -22,7 +22,6 @@ pip install --user wandb 2>/dev/null
 
 echo "=== Train Controller (BC) ==="
 python -u scripts/train_controller_bc.py \
-    --config configs/v6.yaml \
     --expert-episodes-dir data/expert_episodes \
     --transformer-checkpoint checkpoints/transformer_best.pt \
     --epochs 50 \
