@@ -460,47 +460,6 @@
 \section{Phase 2: M (Transformer)}
 % ==========================================================
 
-\begin{frame}{Transformer World Model: Architecture}
-  \vspace{0.5em}
-  \begin{center}
-  \hspace*{-0.05\textwidth}%
-  \resizebox{1.1\textwidth}{!}{%
-  \begin{tikzpicture}[
-    block/.style={rectangle, draw=mcolor, fill=mcolor!10, rounded corners, minimum height=0.9cm, align=center, font=\scriptsize, line width=0.6pt},
-    arr/.style={-{Stealth[length=2.5mm]}, thick},
-    lbl/.style={font=\tiny, align=center},
-  ]
-    \node[lbl] (in) {$\mathbf{z}_{t-K:t}$, $a_{t-K:t}$\\{\tiny \seqlen{} tokens}};
-    \node[block, minimum width=2cm, right=0.6cm of in] (emb) {Token + Action\\Embedding};
-    \node[block, minimum width=2cm, right=0.6cm of emb] (rope) {3D-RoPE\\{\tiny row, col, frame}\\{\tiny block-causal}};
-    \node[block, minimum width=2.5cm, right=0.6cm of rope, fill=mcolor!25] (blocks) {\nlayers$\times$ Transformer\\Block (\hdim d, \nheads H)\\{\tiny AdaLN + QK-Norm}};
-    \node[block, minimum width=2cm, right=0.6cm of blocks] (head) {Prediction\\Head};
-    \node[lbl, right=0.6cm of head] (out1) {$\hat{\mathbf{z}}_{t+1}$, $\hat{d}_{t+1}$\\{\tiny 64 tokens + death}};
-
-    \node[block, minimum width=2cm, above=0.4cm of blocks, fill=mcolor!15] (cpc) {AC-CPC Loss};
-
-    \draw[arr] (in) -- (emb);
-    \draw[arr] (emb) -- (rope);
-    \draw[arr] (rope) -- (blocks);
-    \draw[arr] (blocks) -- (head);
-    \draw[arr] (blocks) -- (cpc);
-    \draw[arr] (head) -- (out1);
-
-    \node[below=0.4cm of blocks, lbl, font=\scriptsize] (ht) {$\mathbf{h}_t \in \mathbb{R}^{\hdim}$};
-    \draw[arr] (blocks.south) -- (ht);
-  \end{tikzpicture}%
-  }
-  \end{center}
-
-  \vspace{0.3em}
-  \begin{center}
-    \small
-    $\sim$35M params \quad\quad
-    Parallel decode: 1 step vs \ntokens+1 autoregressive \quad\quad
-    Vocab: $|\mathcal{V}| = \vocabsize$
-  \end{center}
-\end{frame}
-
 \begin{frame}{Training: Dual Token Noise}
   \vspace{0.5em}
   \begin{columns}[T]
@@ -702,6 +661,52 @@
     \item Szegedy, C. et al. (2016). \href{https://arxiv.org/abs/1512.00567}{\textit{Rethinking the Inception Architecture}}. CVPR
     \item Lin, T.-Y. et al. (2017). \href{https://arxiv.org/abs/1708.02002}{\textit{Focal Loss for Dense Object Detection}}. ICCV
   \end{itemize}
+\end{frame}
+
+% ==========================================================
+\appendix
+\section{Appendix}
+% ==========================================================
+
+\begin{frame}{Transformer World Model: Architecture}
+  \vspace{0.5em}
+  \begin{center}
+  \hspace*{-0.05\textwidth}%
+  \resizebox{1.1\textwidth}{!}{%
+  \begin{tikzpicture}[
+    block/.style={rectangle, draw=mcolor, fill=mcolor!10, rounded corners, minimum height=0.9cm, align=center, font=\scriptsize, line width=0.6pt},
+    arr/.style={-{Stealth[length=2.5mm]}, thick},
+    lbl/.style={font=\tiny, align=center},
+  ]
+    \node[lbl] (in) {$\mathbf{z}_{t-K:t}$, $a_{t-K:t}$\\{\tiny \seqlen{} tokens}};
+    \node[block, minimum width=2cm, right=0.6cm of in] (emb) {Token + Action\\Embedding};
+    \node[block, minimum width=2cm, right=0.6cm of emb] (rope) {3D-RoPE\\{\tiny row, col, frame}\\{\tiny block-causal}};
+    \node[block, minimum width=2.5cm, right=0.6cm of rope, fill=mcolor!25] (blocks) {\nlayers$\times$ Transformer\\Block (\hdim d, \nheads H)\\{\tiny AdaLN + QK-Norm}};
+    \node[block, minimum width=2cm, right=0.6cm of blocks] (head) {Prediction\\Head};
+    \node[lbl, right=0.6cm of head] (out1) {$\hat{\mathbf{z}}_{t+1}$, $\hat{d}_{t+1}$\\{\tiny 64 tokens + death}};
+
+    \node[block, minimum width=2cm, above=0.4cm of blocks, fill=mcolor!15] (cpc) {AC-CPC Loss};
+
+    \draw[arr] (in) -- (emb);
+    \draw[arr] (emb) -- (rope);
+    \draw[arr] (rope) -- (blocks);
+    \draw[arr] (blocks) -- (head);
+    \draw[arr] (blocks) -- (cpc);
+    \draw[arr] (head) -- (out1);
+
+    \node[below=0.4cm of blocks, lbl, font=\scriptsize] (ht) {$\mathbf{h}_t \in \mathbb{R}^{\hdim}$};
+    \draw[arr] (blocks.south) -- (ht);
+  \end{tikzpicture}%
+  }
+  \end{center}
+
+  \vspace{0.3em}
+  \begin{center}
+    \small
+    $\sim$35M params \quad\quad
+    Parallel decode: 1 step vs \ntokens+1 autoregressive \quad\quad
+    Vocab: $|\mathcal{V}| = \vocabsize$
+  \end{center}
 \end{frame}
 
 \end{document}
