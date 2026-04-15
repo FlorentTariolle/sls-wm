@@ -40,7 +40,7 @@ python -u scripts/train_controller_ppo.py \
     --transformer-checkpoint checkpoints/transformer_best.pt \
     --pretrained checkpoints/controller_bc_best.pt \
     $RESUME_FLAG \
-    --config configs/v5.yaml \
+    --config configs/v6.yaml \
     --checkpoint-dir checkpoints \
     --seed 42 &
 

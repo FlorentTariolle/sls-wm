@@ -41,37 +41,6 @@ class RMSNorm(nn.Module):
         return (x * norm).to(x.dtype) * self.weight
 
 
-class SwiGLU(nn.Module):
-    """SwiGLU feed-forward (Shazeer, 2020; Gemma/LLaMA style).
-
-    FFN(x) = down(silu(gate(x)) * up(x))
-    """
-
-    def __init__(self, embed_dim, hidden_dim, dropout):
-        super().__init__()
-        self.gate = nn.Linear(embed_dim, hidden_dim, bias=False)
-        self.up = nn.Linear(embed_dim, hidden_dim, bias=False)
-        self.down = nn.Linear(hidden_dim, embed_dim, bias=False)
-        self.drop = nn.Dropout(dropout)
-
-    def forward(self, x):
-        return self.drop(self.down(F.silu(self.gate(x)) * self.up(x)))
-
-
-def _build_ffn(embed_dim, hidden_dim, dropout, variant):
-    """Construct the block-level feed-forward module."""
-    if variant == "swiglu":
-        return SwiGLU(embed_dim, hidden_dim, dropout)
-    if variant == "gelu":
-        return nn.Sequential(
-            nn.Linear(embed_dim, hidden_dim),
-            nn.GELU(),
-            nn.Linear(hidden_dim, embed_dim),
-            nn.Dropout(dropout),
-        )
-    raise ValueError(f"Unknown ffn_variant: {variant}")
-
-
 def apply_rope(x, cos, sin):
     """Apply rotary position embedding.
 
@@ -102,10 +71,6 @@ class WorldModel(nn.Module):
         cpc_dim: int = 64,
         tokens_per_frame: int = 64,
         adaln: bool = False,
-        ffn_variant: str = "gelu",
-        ffn_hidden: int | None = None,
-        multi_level_readout: bool = False,
-        readout_layers: list[int] | None = None,
     ):
         super().__init__()
         self.vocab_size = vocab_size
@@ -114,7 +79,6 @@ class WorldModel(nn.Module):
         self.context_frames = context_frames
         self.tokens_per_frame = tokens_per_frame
         self.adaln = adaln
-        self.multi_level_readout = multi_level_readout
 
         # Death token indices (appended as 65th position per frame)
         self.ALIVE_TOKEN = vocab_size      # index for alive status
@@ -154,41 +118,10 @@ class WorldModel(nn.Module):
         # Transformer blocks
         BlockClass = AdaLNTransformerBlock if adaln else TransformerBlock
         self.blocks = nn.ModuleList([
-            BlockClass(embed_dim, n_heads, dropout,
-                       ffn_variant=ffn_variant, ffn_hidden=ffn_hidden)
+            BlockClass(embed_dim, n_heads, dropout)
             for _ in range(n_layers)
         ])
         self.ln_f = nn.LayerNorm(embed_dim)
-
-        # Multi-level h_t fusion (V-JEPA 2.1 adapted):
-        # Per-layer LayerNorm + concat + linear fusion applied over the
-        # outputs of selected intermediate transformer blocks. The fused
-        # representation is routed through the CPC source path during
-        # training, so the fusion MLP receives gradient from CPC. h_t
-        # returned to the controller is the fused vector (shape unchanged).
-        if multi_level_readout:
-            if readout_layers is None:
-                readout_layers = list(range(max(0, n_layers - 4), n_layers))
-            for l in readout_layers:
-                if not (0 <= l < n_layers):
-                    raise ValueError(
-                        f"readout_layers contains {l} which is outside "
-                        f"[0, {n_layers})"
-                    )
-            self.readout_layers = list(readout_layers)
-            self._readout_layer_set = set(self.readout_layers)
-            K = len(self.readout_layers)
-            self.readout_lns = nn.ModuleList([
-                nn.LayerNorm(embed_dim) for _ in range(K)
-            ])
-            self.fusion_proj = nn.Linear(K * embed_dim, embed_dim, bias=False)
-            # Output LayerNorm bounds the fused CPC source path, mirroring
-            # the unit-scale contract ln_f gives the V4 source. Without it,
-            # fusion_proj output is unbounded and can overflow under AMP.
-            self.fusion_ln = nn.LayerNorm(embed_dim)
-        else:
-            self.readout_layers = []
-            self._readout_layer_set = set()
         self.embed_drop = nn.Dropout(dropout)
         self.head = nn.Linear(embed_dim, self.full_vocab_size, bias=False)
         # Weight tying: share embedding and output projection weights
@@ -226,49 +159,12 @@ class WorldModel(nn.Module):
                 nn.init.constant_(linear.bias[2*D:3*D], 1.0)  # gate1
                 nn.init.constant_(linear.bias[5*D:6*D], 1.0)  # gate2
 
-        # Identity-on-last-slice init for fusion_proj:
-        # at step 0, fusion_proj(concat(readout_lns(layer_outs))) equals
-        # readout_lns[-1](last_layer_out). After fusion_ln this becomes
-        # LayerNorm(LayerNorm(last_layer_out)), which matches V4's
-        # ln_f(last_layer_out) to within LayerNorm eps (~1e-5) because
-        # all three LayerNorms are default-init (weight=1, bias=0). So V5
-        # h_t and CPC source bootstrap from V4 at init, and CPC gradient
-        # moves the fusion off identity during training.
-        if multi_level_readout:
-            K = len(self.readout_layers)
-            W = torch.zeros(embed_dim, K * embed_dim)
-            last_slice = (K - 1) * embed_dim
-            W[:, last_slice:last_slice + embed_dim] = torch.eye(embed_dim)
-            self.fusion_proj.weight.data.copy_(W)
-
     def _backbone_forward(self, x, cond=None):
-        """Run transformer blocks + final layernorm.
-
-        Returns (x_final, captured) where captured is a list of pre-ln_f
-        block outputs at the indices in self._readout_layer_set. The list
-        length is fixed at model construction, so torch.compile traces a
-        single graph.
-        """
-        captured = []
-        for l, block in enumerate(self.blocks):
+        """Run transformer blocks + final layernorm (compile-friendly hot path)."""
+        for block in self.blocks:
             x, _ = block(x, self.attn_mask, self.rope_cos, self.rope_sin,
                          cond=cond)
-            if l in self._readout_layer_set:
-                captured.append(x)
-        return self.ln_f(x), captured
-
-    def _fuse_multi_level(self, captured):
-        """Per-layer LN + concat + linear fusion + output LN.
-
-        Args:
-            captured: list of K tensors, each (B, T, D), pre-ln_f block
-                      outputs at the readout layer indices.
-        Returns:
-            (B, T, D) fused representation at unit scale.
-        """
-        normed = [ln(lo) for ln, lo in zip(self.readout_lns, captured)]
-        h_stack = torch.cat(normed, dim=-1)          # (B, T, K*D)
-        return self.fusion_ln(self.fusion_proj(h_stack))  # (B, T, D)
+        return self.ln_f(x)
 
     def _build_position_ids(self):
         """Build 3D position IDs (row, col, frame) for each sequence position.
@@ -400,22 +296,8 @@ class WorldModel(nn.Module):
             elif isinstance(module, nn.Embedding):
                 nn.init.normal_(module.weight, std=0.02)
 
-    def _compute_cpc_loss(self, x, actions, temperature=0.1, x_source=None):
-        """Compute AC-CPC contrastive loss over context frame hidden states.
-
-        Args:
-            x: (B, seq_len, D) target path. Used for z_targets via a
-               detached projection, so no gradient flows through it.
-            actions: (B, K) long action ids.
-            temperature: softmax temperature.
-            x_source: optional (B, seq_len, D) source path fed into
-                      cpc_predictors. Defaults to x for V4 behavior.
-                      When multi_level_readout is on, forward() passes
-                      the fused multi-level sequence here so gradient
-                      flows back through fusion_proj and readout_lns.
-        """
-        if x_source is None:
-            x_source = x
+    def _compute_cpc_loss(self, x, actions, temperature=0.1):
+        """Compute AC-CPC contrastive loss over context frame hidden states."""
         K = self.context_frames
         BS = self.block_size
         B = x.size(0)
@@ -430,16 +312,12 @@ class WorldModel(nn.Module):
             # Standard: use action token positions
             anchor_positions = [i * (BS + 1) + BS for i in range(K)]
 
-        # Source hidden states (with gradient if x_source != x)
-        h_steps_src = [x_source[:, pos] for pos in anchor_positions]
-        h_steps_src.append(x_source[:, -1])
-
-        # Target hidden states: always the unfused x path, detached
-        h_steps_tgt = [x[:, pos] for pos in anchor_positions]
-        h_steps_tgt.append(x[:, -1])
+        # Hidden states at anchor positions + target summary (last pos)
+        h_steps = [x[:, pos] for pos in anchor_positions]
+        h_steps.append(x[:, -1])
 
         z_targets = [F.normalize(self.cpc_target_proj(h.detach()), dim=-1)
-                     for h in h_steps_tgt]
+                     for h in h_steps]
 
         act_onehot = F.one_hot(actions, self.n_actions).float()  # (B, K, n_actions)
 
@@ -449,7 +327,7 @@ class WorldModel(nn.Module):
         for step_idx, k in enumerate(range(1, K + 1)):
             predictor = self.cpc_predictors[step_idx]
             for t in range(K + 1 - k):
-                h_src = h_steps_src[t]
+                h_src = h_steps[t]
                 end = min(t + k, K)
                 if end <= t:
                     continue
@@ -506,21 +384,13 @@ class WorldModel(nn.Module):
         x = torch.cat(parts, dim=1)  # (B, seq_len, D)
         x = self.embed_drop(x)
 
-        x, captured = self._backbone_forward(x, cond=cond)
+        x = self._backbone_forward(x, cond=cond)
 
-        # No GPT-shift: each target position predicts its own token.
-        # Head stays on unfused final-layer features (V4 behavior).
+        # No GPT-shift: each target position predicts its own token
         predict_positions = x[:, ctx_end:ctx_end + self.block_size]  # (B, 65, D)
         logits = self.head(predict_positions)  # (B, 65, full_vocab_size)
 
-        # CPC source uses fused multi-level features (V-JEPA 2.1 adapted)
-        # so the fusion MLP receives gradient. Target stays on unfused x
-        # (detached inside _compute_cpc_loss).
-        if self.multi_level_readout:
-            x_source = self._fuse_multi_level(captured)
-            cpc_loss = self._compute_cpc_loss(x, actions, x_source=x_source)
-        else:
-            cpc_loss = self._compute_cpc_loss(x, actions)
+        cpc_loss = self._compute_cpc_loss(x, actions)
 
         return logits, cpc_loss
 
@@ -595,19 +465,10 @@ class WorldModel(nn.Module):
         rope_cos_ctx = self.rope_cos[:ctx_len]
         rope_sin_ctx = self.rope_sin[:ctx_len]
 
-        captured = [] if self.multi_level_readout else None
-        for l, block in enumerate(self.blocks):
+        for block in self.blocks:
             x, _ = block(x, ctx_mask, rope_cos_ctx, rope_sin_ctx,
                          use_cache=False, cond=cond)
-            if captured is not None and l in self._readout_layer_set:
-                captured.append(x)
         x = self.ln_f(x)
-
-        if self.multi_level_readout:
-            # Slice captured at position -1 before fusion to avoid fusing
-            # the whole sequence just to read the last position.
-            captured_last = [lo[:, -1:] for lo in captured]
-            return self._fuse_multi_level(captured_last).squeeze(1)  # (B, D)
         return x[:, -1]  # h_t at last context position
 
     @torch.no_grad()
@@ -662,25 +523,13 @@ class WorldModel(nn.Module):
         rope_cos_ctx = self.rope_cos[:ctx_len]
         rope_sin_ctx = self.rope_sin[:ctx_len]
 
-        capture_ml = return_hidden and self.multi_level_readout
-        captured = [] if capture_ml else None
         context_kvs = []
-        for l, block in enumerate(self.blocks):
+        for block in self.blocks:
             x, kv = block(x, ctx_mask, rope_cos_ctx, rope_sin_ctx,
                           use_cache=True, cond=cond)
             context_kvs.append(kv)
-            if capture_ml and l in self._readout_layer_set:
-                captured.append(x)
         x = self.ln_f(x)
-
-        if return_hidden:
-            if self.multi_level_readout:
-                captured_last = [lo[:, -1:] for lo in captured]
-                h_t = self._fuse_multi_level(captured_last).squeeze(1)
-            else:
-                h_t = x[:, -1]
-        else:
-            h_t = None
+        h_t = x[:, -1] if return_hidden else None
 
         # --- Phase 2: Parallel decode (all tokens in one forward pass) ---
         target_embed = self.mask_embed.expand(B, n_tokens, -1)
@@ -721,8 +570,7 @@ class AdaLNTransformerBlock(nn.Module):
     Reference: Peebles & Xie, 2023 (DiT); LeWorldModel (Galilai group).
     """
 
-    def __init__(self, embed_dim, n_heads, dropout,
-                 ffn_variant="gelu", ffn_hidden=None):
+    def __init__(self, embed_dim, n_heads, dropout):
         super().__init__()
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
@@ -738,8 +586,12 @@ class AdaLNTransformerBlock(nn.Module):
         self.resid_drop = nn.Dropout(dropout)
 
         self.ln2 = nn.LayerNorm(embed_dim, elementwise_affine=False)
-        hidden = ffn_hidden if ffn_hidden is not None else embed_dim * 4
-        self.mlp = _build_ffn(embed_dim, hidden, dropout, ffn_variant)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout),
+        )
 
         # AdaLN-Zero: (scale1, shift1, gate1, scale2, shift2, gate2)
         # Gates multiply sublayer output before residual addition.
@@ -801,8 +653,7 @@ class AdaLNTransformerBlock(nn.Module):
 
 
 class TransformerBlock(nn.Module):
-    def __init__(self, embed_dim, n_heads, dropout,
-                 ffn_variant="gelu", ffn_hidden=None):
+    def __init__(self, embed_dim, n_heads, dropout):
         super().__init__()
         self.n_heads = n_heads
         self.head_dim = embed_dim // n_heads
@@ -814,8 +665,12 @@ class TransformerBlock(nn.Module):
         self.resid_drop = nn.Dropout(dropout)
 
         self.ln2 = nn.LayerNorm(embed_dim)
-        hidden = ffn_hidden if ffn_hidden is not None else embed_dim * 4
-        self.mlp = _build_ffn(embed_dim, hidden, dropout, ffn_variant)
+        self.mlp = nn.Sequential(
+            nn.Linear(embed_dim, embed_dim * 4),
+            nn.GELU(),
+            nn.Linear(embed_dim * 4, embed_dim),
+            nn.Dropout(dropout),
+        )
 
     def forward(self, x, attn_mask, rope_cos, rope_sin,
                 past_kv=None, use_cache=False, cond=None):

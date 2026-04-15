@@ -246,7 +246,7 @@ def train_epoch(model, loader, optimizer, scaler, cpc_weight, device,
             ctx[:, :, :tpf] = visual
             frame_tokens = torch.cat([ctx, frame_tokens[:, -1:]], dim=1)
 
-        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+        with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
             logits, cpc_loss = model(frame_tokens, actions)
             token_loss = focal_cross_entropy(
                 logits.reshape(-1, logits.size(-1)),  # (B*65, vocab)
@@ -309,7 +309,7 @@ def val_epoch(model, loader, device, label_smoothing=0.0, focal_gamma=2.0,
 
         target = frame_tokens[:, -1]
 
-        with torch.autocast(device.type, dtype=torch.bfloat16, enabled=use_amp):
+        with torch.autocast(device.type, dtype=torch.float16, enabled=use_amp):
             logits, cpc_loss = model(frame_tokens, actions)
 
             token_loss = focal_cross_entropy(
@@ -471,10 +471,6 @@ def main():
         dropout=args.dropout,
         tokens_per_frame=args.tokens_per_frame,
         adaln=getattr(args, 'adaln', False),
-        ffn_variant=getattr(args, 'ffn_variant', 'gelu'),
-        ffn_hidden=getattr(args, 'ffn_hidden', None),
-        multi_level_readout=getattr(args, 'multi_level_readout', False),
-        readout_layers=getattr(args, 'readout_layers', None),
     ).to(device)
 
     # Pre-stack into contiguous tensors (avoids per-item numpy->torch overhead)
@@ -516,9 +512,7 @@ def main():
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=args.lr,
                                    weight_decay=args.weight_decay)
-    # bf16 doesn't need loss scaling; GradScaler with enabled=False is a
-    # no-op passthrough (keeps save/load/restore flow unchanged).
-    scaler = torch.GradScaler(device.type, enabled=False)
+    scaler = torch.GradScaler(device.type)
 
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(exist_ok=True)
