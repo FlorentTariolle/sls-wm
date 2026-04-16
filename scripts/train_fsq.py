@@ -108,7 +108,11 @@ def val_epoch(model, loader, amp_dtype=None):
         codebook_size *= int(L)
     all_indices = torch.cat(all_indices)
     usage = all_indices.unique().numel() / codebook_size
-    return total_recon / n, usage
+    counts = torch.bincount(all_indices, minlength=codebook_size).float()
+    probs = counts / counts.sum()
+    entropy = -(probs[probs > 0] * probs[probs > 0].log()).sum()
+    perplexity = entropy.exp().item() / codebook_size
+    return total_recon / n, usage, perplexity
 
 
 def main():
@@ -219,10 +223,17 @@ def main():
 
     model = FSQVAE(levels=args.levels).to(device)
     if args.resume:
-        state = torch.load(args.resume, map_location=device, weights_only=True)
-        state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-        model.load_state_dict(state)
-        print(f"Resumed from {args.resume}")
+        resume_state_path = ckpt_dir / "fsq_state.pt"
+        if resume_state_path.exists():
+            state = torch.load(resume_state_path, map_location=device, weights_only=False)
+            weights = {k.removeprefix("_orig_mod."): v for k, v in state["model"].items()}
+            model.load_state_dict(weights)
+            print(f"Resumed model from {resume_state_path}")
+        elif Path(args.resume).exists():
+            state = torch.load(args.resume, map_location=device, weights_only=True)
+            state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+            model.load_state_dict(state)
+            print(f"Resumed from {args.resume}")
 
     param_count = sum(p.numel() for p in model.parameters())
     print(f"Model parameters: {param_count:,}")
@@ -249,20 +260,32 @@ def main():
     ckpt_dir = Path(args.checkpoint_dir)
     ckpt_dir.mkdir(exist_ok=True)
     best_val_recon = float("inf")
+    start_epoch = 1
+
+    if args.resume:
+        resume_path = ckpt_dir / "fsq_state.pt"
+        if resume_path.exists():
+            resume_state = torch.load(resume_path, map_location=device, weights_only=False)
+            optimizer.load_state_dict(resume_state["optimizer"])
+            scheduler.load_state_dict(resume_state["scheduler"])
+            start_epoch = resume_state["epoch"] + 1
+            best_val_recon = resume_state["best_val_recon"]
+            print(f"Resumed optimizer/scheduler from epoch {resume_state['epoch']}")
 
     log_path = ckpt_dir / "fsq_log.csv"
-    log_file = open(log_path, "w", newline="")
+    log_file = open(log_path, "a" if start_epoch > 1 else "w", newline="")
     log_writer = csv.writer(log_file)
-    log_writer.writerow(["epoch", "train_recon", "train_slow", "train_uniform",
-                         "val_recon", "codebook_usage", "lr", "time_s"])
+    if start_epoch == 1:
+        log_writer.writerow(["epoch", "train_recon", "train_slow", "train_uniform",
+                             "val_recon", "codebook_usage", "codebook_ppl", "lr", "time_s"])
 
     try:
-        for epoch in range(1, args.epochs + 1):
+        for epoch in range(start_epoch, args.epochs + 1):
             t0 = time.time()
             train_recon, train_slow, train_uniform = train_epoch(
                 model, train_loader, optimizer, args.alpha_slow, args.alpha_uniform,
                 scaler=scaler, amp_dtype=amp_dtype)
-            val_recon, codebook_usage = val_epoch(model, val_loader, amp_dtype=amp_dtype)
+            val_recon, codebook_usage, codebook_ppl = val_epoch(model, val_loader, amp_dtype=amp_dtype)
             scheduler.step()
             dt = time.time() - t0
             lr = optimizer.param_groups[0]["lr"]
@@ -270,12 +293,13 @@ def main():
             print(
                 f"Epoch {epoch:3d}/{args.epochs} ({dt:.1f}s) | "
                 f"Train: recon={train_recon:.4f} slow={train_slow:.4f} unif={train_uniform:.4f} | "
-                f"Val: recon={val_recon:.4f} usage={codebook_usage:.1%} | LR: {lr:.1e}"
+                f"Val: recon={val_recon:.4f} usage={codebook_usage:.1%} ppl={codebook_ppl:.1%} | LR: {lr:.1e}"
             )
 
             log_writer.writerow([
                 epoch, f"{train_recon:.6f}", f"{train_slow:.6f}", f"{train_uniform:.6f}",
-                f"{val_recon:.6f}", f"{codebook_usage:.4f}", f"{lr:.1e}", f"{dt:.1f}"
+                f"{val_recon:.6f}", f"{codebook_usage:.4f}", f"{codebook_ppl:.4f}",
+                f"{lr:.1e}", f"{dt:.1f}"
             ])
             log_file.flush()
 
@@ -284,6 +308,7 @@ def main():
                 "train/recon": train_recon, "train/slow": train_slow,
                 "train/uniform": train_uniform,
                 "val/recon": val_recon, "val/codebook_usage": codebook_usage,
+                "val/codebook_ppl": codebook_ppl,
                 "lr": lr,
             })
 
@@ -293,6 +318,16 @@ def main():
                 clean_state = {k.removeprefix("_orig_mod."): v
                                for k, v in model.state_dict().items()}
                 torch.save(clean_state, ckpt_dir / "fsq_best.pt")
+
+            # Save full state for resume
+            torch.save({
+                "epoch": epoch,
+                "model": {k.removeprefix("_orig_mod."): v
+                          for k, v in model.state_dict().items()},
+                "optimizer": optimizer.state_dict(),
+                "scheduler": scheduler.state_dict(),
+                "best_val_recon": best_val_recon,
+            }, ckpt_dir / "fsq_state.pt")
     except KeyboardInterrupt:
         print("\nInterrupted — saving final checkpoint...")
 
