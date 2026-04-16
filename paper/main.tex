@@ -140,7 +140,7 @@ Each spatial position is independently quantized by applying $\tanh$, scaling to
 The decoder mirrors the encoder with transposed convolutions.
 
 Training minimizes MSE reconstruction loss with two regularizers: temporal slowness~\citep{huh2023grwm} ($\lambda_\text{slow} = 0.1$) encouraging smooth latent trajectories across consecutive frames, and a uniformity loss~\citep{wang2020uniformity} ($\lambda_\text{unif} = 0.01$) preventing representational collapse.
-The FSQ-VAE achieves full codebook utilization ($\vocabsize / \vocabsize$ active codes, perplexity 766), reflecting non-uniform but well-spread usage across the codebook.
+The FSQ-VAE achieves full codebook utilization ($\vocabsize / \vocabsize$ active codes, perplexity 370), reflecting non-uniform but well-spread usage across the codebook.
 
 % ---------------------------------------------------------------------------
 \subsection{Structured Label Smoothing}
