@@ -14,23 +14,31 @@
 # Auto-resumes: SLURM sends USR1 5 min before time limit,
 # the trap saves checkpoint and resubmits the job.
 #
-# Prerequisites (run once on login node):
-#   module load aidl/pytorch/2.6.0-cuda12.6
-#   pip install --user numpy
-#
-# Submit:  sbatch slurm/train_transformer.sl
+# Submit:  sbatch slurm/train_transformer.sl [config]
+# Example: sbatch slurm/train_transformer.sl configs/v5b.yaml
 # Monitor: tail -f slurm/logs/train_transformer.out
 
+CONFIG=${1:-configs/v5.yaml}
+
+# Extract checkpoint_dir and FSQ settings from config
+CKPT_DIR=$(python -c "import yaml; print(yaml.safe_load(open('$CONFIG')).get('transformer',{}).get('checkpoint_dir','checkpoints'))")
+FSQ_CKPT=$(python -c "import yaml; c=yaml.safe_load(open('$CONFIG')); print(c.get('fsq',{}).get('checkpoint_dir', c.get('transformer',{}).get('checkpoint_dir','checkpoints')) + '/fsq_best.pt')")
+LEVELS=$(python -c "import yaml; print(' '.join(map(str, yaml.safe_load(open('$CONFIG')).get('model',{}).get('levels',[8,5,5,5]))))")
+
+echo "=== Config: $CONFIG ==="
+echo "=== Checkpoint dir: $CKPT_DIR ==="
+echo "=== FSQ checkpoint: $FSQ_CKPT ==="
+echo "=== FSQ levels: $LEVELS ==="
+
 # Auto-resume: the trap creates a sentinel file before requeuing.
-# On next run, if the sentinel exists, we pass --resume.
-RESUME_FLAG=checkpoints_v5/.resume_transformer
+RESUME_FLAG="$CKPT_DIR/.resume_transformer"
 
 handle_timeout() {
     echo "=== USR1 received ($(date)), saving and resubmitting ==="
     kill -TERM "$TRAIN_PID" 2>/dev/null
     wait "$TRAIN_PID"
     touch "$RESUME_FLAG"
-    scontrol requeue "$SLURM_JOB_ID" || sbatch "$0"
+    scontrol requeue "$SLURM_JOB_ID" || sbatch "$0" "$CONFIG"
     exit 0
 }
 trap handle_timeout USR1
@@ -44,18 +52,18 @@ pip install --user wandb 2>/dev/null
 echo "=== Step 1a: Tokenize death episodes ==="
 python -u scripts/tokenize_episodes.py \
     --model fsq \
-    --checkpoint checkpoints_v5/fsq_best.pt \
+    --checkpoint "$FSQ_CKPT" \
     --episodes-dir data/death_episodes \
     --batch-size 512 \
-    --levels 6 6 6 6
+    --levels $LEVELS
 
 echo "=== Step 1b: Tokenize expert episodes ==="
 python -u scripts/tokenize_episodes.py \
     --model fsq \
-    --checkpoint checkpoints_v5/fsq_best.pt \
+    --checkpoint "$FSQ_CKPT" \
     --episodes-dir data/expert_episodes \
     --batch-size 512 \
-    --levels 6 6 6 6
+    --levels $LEVELS
 
 RESUME_ARG=""
 if [ -f "$RESUME_FLAG" ]; then
@@ -66,7 +74,7 @@ fi
 
 echo "=== Step 2: Train Transformer ($(date)) ==="
 python -u scripts/train_transformer.py \
-    --config configs/v5.yaml \
+    --config "$CONFIG" \
     $RESUME_ARG &
 
 TRAIN_PID=$!
