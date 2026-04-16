@@ -79,21 +79,36 @@ V4 trails V3's L1 progress because the V3 FSQ converged to an oversmoothed local
 ## Training Details
 
 ### FSQ-VAE
-- RMSE 0.025/pixel, 100% codebook utilization
-- GRWM regularization, shift augmentation, cosine LR, 200 epochs on A100
+- RMSE 0.025/pixel, 100% codebook utilization, 37% perplexity (exp(H)/V; uniform = 100%)
+- iFSQ bounding (2σ(1.6z)−1 instead of tanh) for near-uniform bin utilization
+- GRWM regularization, shift augmentation, cosine LR, BF16, 200 epochs on A100
 
 ### Transformer
 - AdaLN-Zero action conditioning (DiT/LeWorldModel) + QK-norm (SD3/MMDiT)
 - Block-causal attention + 3D-RoPE + AC-CPC weight 1.0 (TWISTER)
 - Focal loss + structured label smoothing (sigma=0.9) + dual token noise
-- Vertical-only shift augmentation (5x), death oversample 5x
+- Vertical-only shift augmentation (5x), death oversample 4x
 - No masking (all target tokens predicted, no ground truth leakage)
 - 512d embedding, 8 heads, 8 layers, dropout 0.15
-- 200 epochs, LR 4e-3, batch 512
+- 200 epochs, LR 4e-3, batch 512, BF16
+
+### Training Throughput (A100)
+
+Benchmarked 11 configurations (all `torch.compile` modes × precisions) with subprocess isolation to prevent CUDA allocator fragmentation. Winning config applied to all training scripts:
+
+| Config | ms/step | Speedup |
+|--------|---------|---------|
+| Eager FP32 (baseline) | ~2036ms | 1.00x |
+| Compile default + BF16 | ~317ms | 6.42x |
+| Compile reduce-overhead + BF16 | ~314ms | 6.48x |
+| **Compile max-autotune + BF16** | **311ms** | **6.55x** |
+
+`max-autotune` adds ~2 min compile time but amortizes within 20 training epochs.
 
 ### Controller
 - **BC**: death + expert episodes, class-weighted BCE (1.5x jumps), early stopping
 - **PPO**: clipped surrogate, jump penalty 0.2/jump, percentile-based advantage normalization, EMA target critic (0.98), 45-step dream rollouts, constant LR 1e-4
+- **BC ablation (V4)**: cold-start PPO converges to the same plateau as BC-initialized PPO but needs ~2,000 extra iterations (~6h on A100). BC itself takes ~5 min. ROI: 5 min saves 6 hours.
 
 ### Deployment
 - Screen capture (dxcam), Sobel (7ms, GPU), FSQ encode (4ms), Transformer h_t (14ms), Controller (1ms), keyboard input
@@ -108,6 +123,7 @@ See [VERSIONS.md](VERSIONS.md) for full V0 through V4 evolution.
 ## References
 
 - **FSQ**: Mentzer et al. (2024). [*Finite Scalar Quantization: VQ-VAE Made Simple*](https://arxiv.org/abs/2309.15505). ICLR
+- **iFSQ**: Vali et al. (2026). [*iFSQ: Improving FSQ for Image Generation with 1 Line of Code*](https://arxiv.org/abs/2601.17124). ICLR
 - **Label Smoothing**: Szegedy et al. (2016). [*Rethinking the Inception Architecture for Computer Vision*](https://arxiv.org/abs/1512.00567). CVPR
 - **World Models**: Ha & Schmidhuber (2018). [*World Models*](https://arxiv.org/abs/1803.10122). NeurIPS
 - **IRIS**: Micheli et al. (2023). [*Transformers are Sample-Efficient World Models*](https://arxiv.org/abs/2209.00588). ICLR
