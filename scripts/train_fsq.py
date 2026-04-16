@@ -90,15 +90,25 @@ def train_epoch(model, loader, optimizer, alpha_slow, alpha_uniform,
 def val_epoch(model, loader, amp_dtype=None):
     model.eval()
     total_recon, n = 0, 0
+    all_indices = []
     for ft, ft1 in loader:
         ft = ft.cuda(non_blocking=True)
         with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
             recon_t, _, _ = model(ft)
             recon_loss = fsqvae_loss(recon_t, ft)
+        # Collect codebook indices for utilization metric
+        _, indices = model.fsq(model.encoder(ft))
+        all_indices.append(indices.reshape(-1).cpu())
         bs = ft.size(0)
         total_recon += recon_loss.item() * bs
         n += bs
-    return total_recon / n
+    # Codebook utilization: fraction of codes actually used
+    codebook_size = 1
+    for L in model.fsq.levels.tolist():
+        codebook_size *= int(L)
+    all_indices = torch.cat(all_indices)
+    usage = all_indices.unique().numel() / codebook_size
+    return total_recon / n, usage
 
 
 def main():
@@ -244,7 +254,7 @@ def main():
     log_file = open(log_path, "w", newline="")
     log_writer = csv.writer(log_file)
     log_writer.writerow(["epoch", "train_recon", "train_slow", "train_uniform",
-                         "val_recon", "lr", "time_s"])
+                         "val_recon", "codebook_usage", "lr", "time_s"])
 
     try:
         for epoch in range(1, args.epochs + 1):
@@ -252,7 +262,7 @@ def main():
             train_recon, train_slow, train_uniform = train_epoch(
                 model, train_loader, optimizer, args.alpha_slow, args.alpha_uniform,
                 scaler=scaler, amp_dtype=amp_dtype)
-            val_recon = val_epoch(model, val_loader, amp_dtype=amp_dtype)
+            val_recon, codebook_usage = val_epoch(model, val_loader, amp_dtype=amp_dtype)
             scheduler.step()
             dt = time.time() - t0
             lr = optimizer.param_groups[0]["lr"]
@@ -260,12 +270,12 @@ def main():
             print(
                 f"Epoch {epoch:3d}/{args.epochs} ({dt:.1f}s) | "
                 f"Train: recon={train_recon:.4f} slow={train_slow:.4f} unif={train_uniform:.4f} | "
-                f"Val: recon={val_recon:.4f} | LR: {lr:.1e}"
+                f"Val: recon={val_recon:.4f} usage={codebook_usage:.1%} | LR: {lr:.1e}"
             )
 
             log_writer.writerow([
                 epoch, f"{train_recon:.6f}", f"{train_slow:.6f}", f"{train_uniform:.6f}",
-                f"{val_recon:.6f}", f"{lr:.1e}", f"{dt:.1f}"
+                f"{val_recon:.6f}", f"{codebook_usage:.4f}", f"{lr:.1e}", f"{dt:.1f}"
             ])
             log_file.flush()
 
@@ -273,7 +283,8 @@ def main():
                 "epoch": epoch,
                 "train/recon": train_recon, "train/slow": train_slow,
                 "train/uniform": train_uniform,
-                "val/recon": val_recon, "lr": lr,
+                "val/recon": val_recon, "val/codebook_usage": codebook_usage,
+                "lr": lr,
             })
 
             if val_recon < best_val_recon:
