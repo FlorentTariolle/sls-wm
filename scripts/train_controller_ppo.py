@@ -389,7 +389,7 @@ def main():
                         help="Override wandb run name (default: ppo-{embed_dim}d)")
     parser.add_argument("--resume", action="store_true",
                         help="Resume from latest checkpoint and append to CSV log")
-    parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument("--checkpoint-dir", default=None)
     parser.add_argument("--n-eval-episodes", type=int, default=None)
     parser.add_argument("--eval-interval", type=int, default=None)
     parser.add_argument("--seed", type=int, default=42)

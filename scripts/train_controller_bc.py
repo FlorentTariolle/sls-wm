@@ -110,7 +110,7 @@ def main():
     parser.add_argument("--expert-episodes-dir", default="data/expert_episodes")
     parser.add_argument("--transformer-checkpoint",
                         default="checkpoints/transformer_best.pt")
-    parser.add_argument("--checkpoint-dir", default="checkpoints")
+    parser.add_argument("--checkpoint-dir", default=None)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch-size", type=int, default=512)
     parser.add_argument("--lr", type=float, default=1e-3)
