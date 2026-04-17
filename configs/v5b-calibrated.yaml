@@ -23,6 +23,7 @@ fsq:
   lr: 0.001
   alpha_slow: 0.1
   alpha_uniform: 0.01
+  k_shifts: 1      # standard 1-augmentation-per-sample-per-epoch
   seed: 42
   amp: true
   compile: true

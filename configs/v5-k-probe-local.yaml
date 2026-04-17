@@ -1,0 +1,43 @@
+# FSQ shift-subsampling probe -- V5 arch (levels [5,5,5,5]), local RTX 2060
+# Goal: check whether K=2-of-5 shift subsampling matches K=5 quality at
+# ~2.5x fewer gradient steps per epoch.
+#
+# Constant LR (no cosine) so the 50-epoch probe isn't distorted by a
+# compressed LR tail. lr = cosine's epoch-0 value = v5b.yaml fsq.lr.
+#
+# Launch (run sequentially, same seed):
+#   python scripts/train_fsq.py --config configs/v5-k-probe-local.yaml \
+#       --k-shifts 5 --checkpoint-dir checkpoints_v5_k5_probe
+#   python scripts/train_fsq.py --config configs/v5-k-probe-local.yaml \
+#       --k-shifts 2 --checkpoint-dir checkpoints_v5_k2_probe
+
+model:
+  vocab_size: 625
+  embed_dim: 512
+  n_heads: 8
+  n_layers: 8
+  tokens_per_frame: 64
+  context_frames: 4
+  levels: [5, 5, 5, 5]
+  dropout: 0.15
+  adaln: true
+
+fsq:
+  episodes_dir: data/death_episodes
+  expert_episodes_dir: data/expert_episodes
+  epochs: 20  # K=5 default; K=2 was run at 50 epochs for matched gradient-step budget (2.5x more epochs since 2/5 data per epoch)
+  batch_size: 512
+  lr: 0.001
+  lr_schedule: constant
+  alpha_slow: 0.1
+  alpha_uniform: 0.01
+  pixel_noise_std: 0.02     # denoising-AE Gaussian noise on encoder input (target clean)
+  brightness_range: 0.1     # uniform brightness offset ±, pair-coherent
+  contrast_range: 0.1       # uniform contrast factor 1±, pair-coherent
+  seed: 42
+  amp: false      # RTX 2060 (Turing): bf16 slower than eager FP32; no TF32 support
+  compile: true
+  compile_mode: default  # inductor layout_optimization disabled in script; max-autotune cudagraphs also fail on Turing backward
+  num_workers: 0  # Windows spawn can't pickle the 4.6 GB dataset to worker subprocesses
+  max_base_episodes: 1000  # probe-only: shrink dataset ~4x for tractable local runtime
+  # k_shifts and checkpoint_dir set per-run via CLI
