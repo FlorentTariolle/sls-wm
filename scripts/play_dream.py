@@ -336,7 +336,7 @@ def main():
             action = 1 if keys[pygame.K_SPACE] else 0
 
         # World model prediction
-        with torch.no_grad(), torch.cuda.amp.autocast(enabled=device.type == "cuda"):
+        with torch.no_grad():
             pred_tokens, death_prob = wm.predict_next_frame(
                 ctx_t, ctx_a, temperature=0.0)
 
