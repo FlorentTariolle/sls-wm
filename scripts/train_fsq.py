@@ -100,8 +100,10 @@ class FramePairDataset(Dataset):
 
     def __getitem__(self, idx):
         real = self.active_idx[idx]
-        ft = torch.from_numpy(self.ft[real].copy()).float().unsqueeze(0) / 255.0
-        ft1 = torch.from_numpy(self.ft1[real].copy()).float().unsqueeze(0) / 255.0
+        # Return uint8 (1, 64, 64). Float conversion + /255 happens on GPU in the
+        # training loop (saves ~4x on H2D traffic and the expensive CPU-side divide).
+        ft = torch.from_numpy(self.ft[real].copy()).unsqueeze(0)
+        ft1 = torch.from_numpy(self.ft1[real].copy()).unsqueeze(0)
         return ft, ft1
 
 
@@ -144,8 +146,8 @@ def train_epoch(model, loader, optimizer, alpha_slow, alpha_uniform,
     t_prev = time.perf_counter()
 
     for ft, ft1 in loader:
-        ft = ft.cuda(non_blocking=True)
-        ft1 = ft1.cuda(non_blocking=True)
+        ft = ft.cuda(non_blocking=True).float().mul_(1.0 / 255.0)
+        ft1 = ft1.cuda(non_blocking=True).float().mul_(1.0 / 255.0)
         sync()
         t0 = time.perf_counter()
         t_data += t0 - t_prev
@@ -196,7 +198,7 @@ def val_epoch(model, loader, amp_dtype=None):
     total_recon, n = 0, 0
     all_indices = []
     for ft, ft1 in loader:
-        ft = ft.cuda(non_blocking=True)
+        ft = ft.cuda(non_blocking=True).float().mul_(1.0 / 255.0)
         with torch.amp.autocast("cuda", enabled=amp_dtype is not None, dtype=amp_dtype):
             recon_t, _, _ = model(ft)
             recon_loss = fsqvae_loss(recon_t, ft)
@@ -473,13 +475,20 @@ def main():
                 f"Train: recon={train_recon:.4f} slow={train_slow:.4f} unif={train_uniform:.4f} | "
                 f"Val: recon={val_recon:.4f} usage={codebook_usage:.1%} ppl={codebook_ppl:.1%} | LR: {lr:.1e}"
             )
+            if device.type == "cuda":
+                peak_gb = torch.cuda.max_memory_allocated() / 1e9
+                reserved_gb = torch.cuda.max_memory_reserved() / 1e9
+                torch.cuda.reset_peak_memory_stats()
+            else:
+                peak_gb = reserved_gb = 0.0
             print(
                 f"  Timing ({t_total:.1f}s train): "
                 f"data {timing['data']:.1f}s ({pct['data']:.0f}%) | "
                 f"aug {timing['aug']:.1f}s ({pct['aug']:.0f}%) | "
                 f"fwd {timing['fwd']:.1f}s ({pct['fwd']:.0f}%) | "
                 f"bwd {timing['bwd']:.1f}s ({pct['bwd']:.0f}%) | "
-                f"opt {timing['opt']:.1f}s ({pct['opt']:.0f}%)"
+                f"opt {timing['opt']:.1f}s ({pct['opt']:.0f}%) | "
+                f"VRAM peak {peak_gb:.2f}GB (reserved {reserved_gb:.2f}GB)"
             )
 
             log_writer.writerow([
@@ -499,6 +508,7 @@ def main():
                 "time/data": timing["data"], "time/aug": timing["aug"],
                 "time/fwd": timing["fwd"], "time/bwd": timing["bwd"],
                 "time/opt": timing["opt"],
+                "vram/peak_gb": peak_gb, "vram/reserved_gb": reserved_gb,
             })
 
             if val_recon < best_val_recon:
