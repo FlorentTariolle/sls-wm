@@ -50,6 +50,7 @@ We introduce \emph{Structured Label Smoothing} (SLS), a training objective that 
 We integrate SLS into a full Vision-Model-Controller pipeline for the platformer game Geometry Dash, combining an FSQ tokenizer, a causally-masked transformer with Adaptive Layer Normalization and 3D Rotary Position Embeddings, and an MLP controller on the transformer's hidden state, trained with PPO entirely in dreamed rollouts.
 The resulting system runs at 30\,FPS on consumer hardware.
 % TODO: Add headline result once model is frozen (e.g., "achieving X\% progress on Level 1").
+Code is available at \url{https://github.com/Tariolle/sls-wm}.
 \end{abstract}
 
 % ===========================================================================
@@ -369,7 +370,7 @@ A natural extension is to make the kernel bandwidth $\sigma$ and per-dimension w
 
 \begin{ack}
   We thank Ma{\"e}l Planchot for contributing gameplay data.
-  Compute resources were provided by MesoNet (CRIANN, Rouen) through the Representation Learning course at INSA Rouen Normandy.
+  The NVIDIA A100 GPU used for all primary training runs was provided by MesoNet (CRIANN, Rouen) through the Representation Learning course at INSA Rouen Normandy.
   Geometry Dash is developed by RobTop Games.
 \end{ack}
 
