@@ -1,9 +1,9 @@
-# DeepDash V5b candidate -- V4 + FSQ [5,5,5,5]
-# Smallest isotropic codebook: 625 codes, equal dim_weights.
-# All transformer/controller hyperparameters frozen at V4 values.
-# Checkpoints isolated in checkpoints_v5_baseline/ to preserve other artifacts.
+# V5b + calibrated SLS -- SLS calibration ablation on uniform [5,5,5,5] codebook.
+# Identical to v5b.yaml except:
+#   - fsq_dim_weights: measured from fsq_sensitivity.py on 24430 val frames
+#   - label_smoothing: recommended by quantization margin analysis
+#   - checkpoint_dir: isolated to preserve baseline V5 checkpoints
 
-# Shared model architecture
 model:
   vocab_size: 625
   embed_dim: 512
@@ -15,7 +15,6 @@ model:
   dropout: 0.15
   adaln: true
 
-# FSQ-VAE training
 fsq:
   episodes_dir: data/death_episodes
   expert_episodes_dir: data/expert_episodes
@@ -29,7 +28,6 @@ fsq:
   compile: true
   checkpoint_dir: checkpoints_v5_baseline
 
-# Transformer world-model training
 transformer:
   episodes_dir: data/death_episodes
   expert_episodes_dir: data/expert_episodes
@@ -41,32 +39,30 @@ transformer:
   cpc_weight: 1.0
   token_noise: 0.05
   fsq_noise: 0.05
-  label_smoothing: 0.1
+  label_smoothing: 0.63
   fsq_sigma: 0.9
-  fsq_dim_weights: [1.0, 1.0, 1.0, 1.0]
+  fsq_dim_weights: [1.02, 0.93, 0.84, 1.22]
   focal_gamma: 2.0
   death_oversample: 4
   steps_per_epoch: 500
   patience: 60
   seed: 42
-  checkpoint_dir: checkpoints_v5_baseline
+  checkpoint_dir: checkpoints_v5b_calibrated
 
-# Controller -- behavioral cloning pretraining
 controller_bc:
   expert_episodes_dir: data/expert_episodes
-  transformer_checkpoint: checkpoints_v5_baseline/transformer_best.pt
+  transformer_checkpoint: checkpoints_v5b_calibrated/transformer_best.pt
   epochs: 50
   batch_size: 512
   lr: 0.001
   weight_decay: 0.0001
   val_ratio: 0.1
   seed: 42
-  checkpoint_dir: checkpoints_v5_baseline
+  checkpoint_dir: checkpoints_v5b_calibrated
 
-# Controller -- PPO fine-tuning
 controller_ppo:
-  transformer_checkpoint: checkpoints_v5_baseline/transformer_best.pt
-  pretrained: checkpoints_v5_baseline/controller_bc_best.pt
+  transformer_checkpoint: checkpoints_v5b_calibrated/transformer_best.pt
+  pretrained: checkpoints_v5b_calibrated/controller_bc_best.pt
   amp_dtype: bfloat16
   n_iterations: 50000
   n_episodes: 512
@@ -85,4 +81,4 @@ controller_ppo:
   n_eval_episodes: 512
   eval_interval: 10
   seed: 42
-  checkpoint_dir: checkpoints_v5_baseline
+  checkpoint_dir: checkpoints_v5b_calibrated
