@@ -28,8 +28,8 @@
 \newcommand{\framesize}{64}          % input frame resolution (pixels)
 \newcommand{\spatialres}{8}          % token grid side length
 \newcommand{\ntokens}{64}            % tokens per frame (\spatialres^2)
-\newcommand{\fsqcodes}{1000}         % FSQ codebook size
-\newcommand{\vocabsize}{1002}        % full vocab (\fsqcodes + ALIVE + DEATH)
+\newcommand{\fsqcodes}{625}          % FSQ codebook size
+\newcommand{\vocabsize}{627}         % full vocab (\fsqcodes + ALIVE + DEATH)
 \newcommand{\contextK}{4}            % context frames K
 \newcommand{\seqlen}{329}            % input sequence length (\contextK*65 + \contextK + 65)
 \newcommand{\nshifts}{5}             % number of vertical augmentation shifts
@@ -282,7 +282,7 @@
 
   \vspace{0.3em}
   \begin{center}
-    Levels $[8,5,5,5]$ $\Rightarrow$ \fsqcodes{} codes\\
+    Levels $[5,5,5,5]$ $\Rightarrow$ \fsqcodes{} codes\\
     $\spatialres\times\spatialres$ grid $=$ \textbf{\ntokens{} tokens/frame}
   \end{center}
   % TODO: add before/after reconstruction comparison
@@ -307,7 +307,7 @@
     \node[layer, minimum width=0.8cm, minimum height=0.5cm, right=0.25cm of c3] (proj) {1$\times$1};
 
     % FSQ bottleneck
-    \node[fsqbox, minimum width=0.8cm, minimum height=0.5cm, right=0.35cm of proj] (fsq) {\textbf{FSQ}\\{[8,5,5,5]}};
+    \node[fsqbox, minimum width=0.8cm, minimum height=0.5cm, right=0.35cm of proj] (fsq) {\textbf{FSQ}\\{[5,5,5,5]}};
 
     % Decoder
     \node[layer, minimum width=0.8cm, minimum height=0.5cm, right=0.35cm of fsq] (dproj) {1$\times$1};
@@ -334,7 +334,7 @@
     \node[dims, below=0.15cm of c2] {16$\times$16\\64ch};
     \node[dims, below=0.15cm of c3] {8$\times$8\\128ch};
     \node[dims, below=0.15cm of proj] {8$\times$8\\4ch};
-    \node[dims, below=0.15cm of fsq, align=center] {8$\times$8\\1000 codes};
+    \node[dims, below=0.15cm of fsq, align=center] {8$\times$8\\625 codes};
     \node[dims, below=0.15cm of dproj] {8$\times$8\\128ch};
     \node[dims, below=0.15cm of dc1] {16$\times$16\\64ch};
     \node[dims, below=0.15cm of dc2] {32$\times$32\\32ch};
@@ -452,7 +452,7 @@
   \begin{itemize}
     \item Encoder + FSQ \textbf{frozen} after training
     \item Decoder $\to$ visualization only (dream rollouts)
-    \item \textbf{51$\times$ compression}: $32{,}768 \to 640$ bits/frame
+    \item \textbf{55$\times$ compression}: $32{,}768 \to 594$ bits/frame
   \end{itemize}
 \end{frame}
 
@@ -469,7 +469,7 @@
     \vspace{0.5em}
     \textbf{1. Random replacement (5\%)}
     \begin{itemize}
-      \item Any of 1000 tokens uniformly
+      \item Any of 625 tokens uniformly
       \item Forces global robustness
     \end{itemize}
 
