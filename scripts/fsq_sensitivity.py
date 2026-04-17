@@ -1,20 +1,29 @@
-"""FSQ codebook sensitivity analysis.
+"""FSQ codebook sensitivity analysis — paper-quality calibration.
 
-Measures how much reconstruction degrades when perturbing quantized codes
-by 1 or 2 steps in various FSQ dimensions. Used to calibrate the structured
-label smoothing sigma for the transformer.
+Fits multiple kernel families (L2 Gaussian, L1 Laplace, anisotropic Gaussian,
+Cauchy) to reconstruction-similarity-vs-FSQ-distance data, with cross-
+validation and bootstrap confidence intervals. Reports per-metric (MSE and
+SSIM) recommendations for --fsq-kernel, --fsq-sigma / --fsq-sigma-d,
+and --fsq-dim-weights.
 
 Usage:
-    python scripts/fsq_sensitivity.py
-    python scripts/fsq_sensitivity.py --checkpoint checkpoints/fsq_best.pt
+    python scripts/fsq_sensitivity.py \
+        --checkpoint checkpoints_v5_baseline/fsq_best.pt --levels 5 5 5 5
 """
 
 import argparse
+import json
+import re
 import sys
+from dataclasses import dataclass, field
+from itertools import combinations
 from pathlib import Path
+from typing import List
 
 import numpy as np
 import torch
+from scipy.optimize import minimize, minimize_scalar
+from skimage.metrics import structural_similarity as ssim
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -22,8 +31,11 @@ from deepdash.fsq import FSQVAE
 from deepdash.data_split import get_val_episodes, is_val_episode
 
 
+# -------- Data loading --------
+
 def load_val_frames(episodes_dir, expert_episodes_dir, max_frames=10000, seed=42):
-    """Load a sample of validation frames."""
+    """Load a sample of validation frames from base episodes only (skip shifts)."""
+    shift_re = re.compile(r"_s[+-]\d+_[+-]\d+$")
     val_set = get_val_episodes(episodes_dir, expert_episodes_dir)
     all_frames = []
     for ep_dir in [episodes_dir, expert_episodes_dir]:
@@ -31,6 +43,8 @@ def load_val_frames(episodes_dir, expert_episodes_dir, max_frames=10000, seed=42
         if not p.exists():
             continue
         for ep in sorted(p.glob("*")):
+            if shift_re.search(ep.name):
+                continue
             fp = ep / "frames.npy"
             if not fp.exists():
                 continue
@@ -42,6 +56,514 @@ def load_val_frames(episodes_dir, expert_episodes_dir, max_frames=10000, seed=42
     return data[indices]
 
 
+def encode_all(model, frames, batch_size, device):
+    """Encode frames to quantized codes; keep images for later reconstruction."""
+    all_z_q = []
+    all_imgs = []
+    with torch.no_grad():
+        for i in range(0, len(frames), batch_size):
+            batch = torch.from_numpy(
+                frames[i:i + batch_size].astype(np.float32) / 255.0
+            ).unsqueeze(1).to(device)
+            z_e = model.encoder(batch)
+            z_q, _ = model.fsq(z_e)
+            all_z_q.append(z_q.cpu())
+            all_imgs.append(batch.cpu())
+    return torch.cat(all_z_q), torch.cat(all_imgs)
+
+
+# -------- Perturbation specs --------
+
+@dataclass
+class Spec:
+    """A perturbation: step magnitudes per dim (0 = no perturbation)."""
+    name: str
+    step_by_dim: List[int] = field(default_factory=list)  # len = n_dims
+
+    def nonzero_steps(self):
+        return [(d, s) for d, s in enumerate(self.step_by_dim) if s != 0]
+
+
+def generate_perturbations(levels):
+    """Build a comprehensive perturbation set: single-dim up to 4 steps,
+    multi-dim +1 and +2 combos, and mixed (+2, +1) pairs.
+    """
+    n_dims = len(levels)
+    specs = []
+    # Single-dim: steps 1..4 where feasible
+    for d in range(n_dims):
+        max_step = levels[d] - 1
+        for step in range(1, min(max_step, 4) + 1):
+            v = [0] * n_dims
+            v[d] = step
+            specs.append(Spec(f"dim{d}(L={levels[d]}) +{step}", v))
+    # All 2/3/4-dim subsets at +1
+    for k in range(2, n_dims + 1):
+        for combo in combinations(range(n_dims), k):
+            v = [0] * n_dims
+            for d in combo:
+                v[d] = 1
+            name = "+".join(f"d{d}" for d in combo) + " +1"
+            specs.append(Spec(name, v))
+    # All 2/3/4-dim subsets at +2 (where feasible for all dims in combo)
+    for k in range(2, n_dims + 1):
+        for combo in combinations(range(n_dims), k):
+            if any(levels[d] - 1 < 2 for d in combo):
+                continue
+            v = [0] * n_dims
+            for d in combo:
+                v[d] = 2
+            name = "+".join(f"d{d}" for d in combo) + " +2"
+            specs.append(Spec(name, v))
+    # Mixed-step pairs (d_i +2, d_j +1)
+    for d1 in range(n_dims):
+        for d2 in range(n_dims):
+            if d1 == d2:
+                continue
+            if levels[d1] - 1 < 2 or levels[d2] - 1 < 1:
+                continue
+            v = [0] * n_dims
+            v[d1] = 2
+            v[d2] = 1
+            specs.append(Spec(f"d{d1}+2,d{d2}+1", v))
+    return specs
+
+
+def apply_perturbation(z_q, spec, levels):
+    """Apply a perturbation to quantized codes, respecting code-range bounds."""
+    half_levels = [L // 2 for L in levels]
+    out = z_q.clone()
+    for d, step in spec.nonzero_steps():
+        half = float(half_levels[d])
+        max_val = half - (1.0 - levels[d] % 2)
+        min_val = -half
+        vals = out[:, d]
+        can_up = vals + step <= max_val
+        can_down = vals - step >= min_val
+        rand_up = torch.rand_like(vals) > 0.5
+        go_up = torch.where(can_up & can_down, rand_up,
+                            torch.where(can_up, torch.ones_like(rand_up),
+                                        torch.zeros_like(rand_up)))
+        can_any = can_up | can_down
+        delta = torch.where(go_up, float(step), float(-step)) * can_any.float()
+        out[:, d] = vals + delta
+    return out
+
+
+# -------- Per-frame error measurement --------
+
+def _ssim_batch(recon_np, orig_np):
+    """Compute SSIM per-frame for a (B, H, W) batch. Returns (B,) float array."""
+    out = np.empty(len(recon_np), dtype=np.float32)
+    for j in range(len(recon_np)):
+        out[j] = ssim(orig_np[j], recon_np[j], data_range=1.0)
+    return out
+
+
+def measure_errors(model, all_z_q, all_imgs, specs, levels, batch_size, device,
+                   compute_ssim=True):
+    """Compute per-frame MSE and SSIM for baseline and each perturbation.
+
+    Returns:
+        mse_baseline: (N,) float
+        ssim_baseline: (N,) float or None
+        mse_perturbed: (K, N) float
+        ssim_perturbed: (K, N) float or None
+    """
+    N = len(all_z_q)
+    K = len(specs)
+
+    def _decode_pass(z_q_all):
+        mse = np.zeros(N, dtype=np.float32)
+        ssim_arr = np.zeros(N, dtype=np.float32) if compute_ssim else None
+        with torch.no_grad():
+            for i in range(0, N, batch_size):
+                z_q = z_q_all[i:i + batch_size].to(device)
+                recon = model.decoder(z_q)
+                orig = all_imgs[i:i + batch_size].to(device)
+                per_mse = ((recon - orig) ** 2).mean(dim=[1, 2, 3]).cpu().numpy()
+                mse[i:i + len(per_mse)] = per_mse
+                if compute_ssim:
+                    recon_np = recon.cpu().numpy()[:, 0]
+                    orig_np = orig.cpu().numpy()[:, 0]
+                    ssim_arr[i:i + len(per_mse)] = _ssim_batch(recon_np, orig_np)
+        return mse, ssim_arr
+
+    print("  baseline ...", flush=True)
+    mse_baseline, ssim_baseline = _decode_pass(all_z_q)
+
+    mse_perturbed = np.zeros((K, N), dtype=np.float32)
+    ssim_perturbed = np.zeros((K, N), dtype=np.float32) if compute_ssim else None
+    for k, spec in enumerate(specs):
+        print(f"  [{k + 1:>2}/{K}] {spec.name}", flush=True)
+        z_q_p = apply_perturbation(all_z_q, spec, levels)
+        mse_k, ssim_k = _decode_pass(z_q_p)
+        mse_perturbed[k] = mse_k
+        if compute_ssim:
+            ssim_perturbed[k] = ssim_k
+    return mse_baseline, ssim_baseline, mse_perturbed, ssim_perturbed
+
+
+# -------- Bootstrap CIs --------
+
+def bootstrap_ratio(per_frame_baseline, per_frame_perturbed, B=500, seed=42):
+    """Mean ratio of perturbed/baseline MSE (or 1-SSIM) with 95% percentile CI."""
+    rng = np.random.default_rng(seed)
+    N = len(per_frame_baseline)
+    ratios = np.empty(B, dtype=np.float32)
+    for b in range(B):
+        idx = rng.integers(0, N, size=N)
+        num = per_frame_perturbed[idx].mean()
+        den = max(per_frame_baseline[idx].mean(), 1e-12)
+        ratios[b] = num / den
+    return float(ratios.mean()), float(np.percentile(ratios, 2.5)), float(np.percentile(ratios, 97.5))
+
+
+# -------- Kernel families --------
+
+def kernel_value(kernel, params, weighted_steps):
+    """Compute kernel value at a weighted step vector.
+
+    kernel: 'gaussian', 'laplace', 'cauchy', 'aniso_gaussian'
+    params: scalar sigma (1D kernels) or per-dim sigma array (aniso)
+    weighted_steps: (n_dims,) array of step_d * dim_weight_d
+    """
+    if kernel == 'gaussian':
+        d_sq = float((weighted_steps ** 2).sum())
+        return np.exp(-d_sq / (2.0 * float(params) ** 2))
+    if kernel == 'laplace':
+        d = float(np.abs(weighted_steps).sum())
+        return np.exp(-d / float(params))
+    if kernel == 'cauchy':
+        d_sq = float((weighted_steps ** 2).sum())
+        return 1.0 / (1.0 + d_sq / (float(params) ** 2))
+    if kernel == 'aniso_gaussian':
+        sigma_d = np.asarray(params, dtype=np.float64)
+        return float(np.exp(-((weighted_steps / sigma_d) ** 2).sum() / 2.0))
+    raise ValueError(f"unknown kernel: {kernel}")
+
+
+def _normalized_mse(preds, targets):
+    preds = np.clip(preds, 1e-20, None)
+    pred_norm = preds / preds.sum()
+    tgt_norm = targets / targets.sum()
+    return float(((pred_norm - tgt_norm) ** 2).mean())
+
+
+def _fit_on_indices(kernel, specs, similarities, dim_weights, indices, seed):
+    """Fit kernel params on a subset of specs/similarities (used by CV)."""
+    n_dims = len(dim_weights)
+    dw = np.asarray(dim_weights, dtype=np.float64)
+    ws_list = []
+    tgt_list = []
+    for i in indices:
+        step_vec = np.asarray(specs[i].step_by_dim, dtype=np.float64)
+        ws_list.append(step_vec * dw)
+        tgt_list.append(float(similarities[i]))
+    ws_arr = np.array(ws_list)
+    tgt_arr = np.array(tgt_list)
+
+    def loss(params):
+        preds = np.array([kernel_value(kernel, params, ws) for ws in ws_arr])
+        return _normalized_mse(preds, tgt_arr)
+
+    if kernel == 'aniso_gaussian':
+        rng = np.random.default_rng(seed)
+        best_x = None
+        best_f = np.inf
+        for r in range(3):
+            x0 = np.full(n_dims, 0.9) if r == 0 else rng.uniform(0.3, 1.5, size=n_dims)
+            res = minimize(loss, x0, method='L-BFGS-B',
+                           bounds=[(0.01, 5.0)] * n_dims)
+            if res.fun < best_f:
+                best_f = float(res.fun)
+                best_x = res.x
+        return best_x, best_f
+    else:
+        res = minimize_scalar(loss, bounds=(0.01, 5.0), method='bounded')
+        return np.array([float(res.x)]), float(res.fun)
+
+
+def _score_on_indices(kernel, specs, similarities, dim_weights, params, indices):
+    n_dims = len(dim_weights)
+    dw = np.asarray(dim_weights, dtype=np.float64)
+    preds = []
+    tgts = []
+    for i in indices:
+        step_vec = np.asarray(specs[i].step_by_dim, dtype=np.float64)
+        ws = step_vec * dw
+        preds.append(kernel_value(kernel, params if len(params) > 1 else params[0], ws))
+        tgts.append(float(similarities[i]))
+    return _normalized_mse(np.array(preds), np.array(tgts))
+
+
+def cv_fit(kernel, specs, similarities, dim_weights, seed):
+    """2-fold CV + full fit. Returns (params_full, fit_mse, cv_mse)."""
+    rng = np.random.default_rng(seed)
+    n = len(specs)
+    idx = rng.permutation(n)
+    fold_a, fold_b = idx[:n // 2], idx[n // 2:]
+    p_a, _ = _fit_on_indices(kernel, specs, similarities, dim_weights, fold_a, seed)
+    p_b, _ = _fit_on_indices(kernel, specs, similarities, dim_weights, fold_b, seed + 1)
+    cv_a = _score_on_indices(kernel, specs, similarities, dim_weights, p_a, fold_b)
+    cv_b = _score_on_indices(kernel, specs, similarities, dim_weights, p_b, fold_a)
+    all_idx = np.arange(n)
+    p_full, fit_full = _fit_on_indices(kernel, specs, similarities, dim_weights, all_idx, seed)
+    return p_full, fit_full, (cv_a + cv_b) / 2.0
+
+
+def multi_seed_fit(kernel, specs, similarities, dim_weights, seeds):
+    """Repeat cv_fit across seeds; report mean params and mean CV MSE."""
+    p_list = []
+    fit_list = []
+    cv_list = []
+    for s in seeds:
+        p, fit_mse, cv_mse = cv_fit(kernel, specs, similarities, dim_weights, seed=s)
+        p_list.append(np.atleast_1d(p))
+        fit_list.append(fit_mse)
+        cv_list.append(cv_mse)
+    p_arr = np.array(p_list)
+    return {
+        'params_mean': p_arr.mean(axis=0),
+        'params_std': p_arr.std(axis=0),
+        'fit_mse': float(np.mean(fit_list)),
+        'cv_mse': float(np.mean(cv_list)),
+    }
+
+
+def aic(params, fit_mse, n_samples):
+    """AIC = 2k + n*ln(loss). fit_mse is normalized-distribution MSE, so AIC
+    is a relative ranking only — consistent within a single fit metric column.
+    """
+    k = len(np.atleast_1d(params))
+    return 2.0 * k + float(n_samples) * np.log(max(fit_mse, 1e-20))
+
+
+# -------- Reporting --------
+
+def format_params(params_mean, params_std):
+    """Format kernel params. Omit '+/- std' when std is negligible."""
+    tiny = 1e-3
+    if len(params_mean) == 1:
+        if params_std[0] < tiny:
+            return f"sigma={params_mean[0]:.3f}"
+        return f"sigma={params_mean[0]:.3f} +/- {params_std[0]:.3f}"
+    pm = ",".join(f"{m:.3f}" for m in params_mean)
+    if all(s < tiny for s in params_std):
+        return f"sigma=[{pm}]"
+    ps = ",".join(f"{s:.3f}" for s in params_std)
+    return f"sigma=[{pm}] +/- [{ps}]"
+
+
+def run_analysis(args, device):
+    """Full calibration pipeline."""
+    model = FSQVAE(levels=args.levels)
+    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
+    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
+    model.load_state_dict(state)
+    model.to(device).eval()
+
+    print("Loading validation frames...", flush=True)
+    frames = load_val_frames(args.episodes_dir, args.expert_episodes_dir,
+                             args.max_frames)
+    print(f"Loaded {len(frames)} frames", flush=True)
+
+    print("Encoding...", flush=True)
+    all_z_q, all_imgs = encode_all(model, frames, args.batch_size, device)
+
+    specs = generate_perturbations(args.levels)
+    print(f"Generated {len(specs)} perturbations", flush=True)
+
+    compute_ssim = not args.no_ssim
+    print(f"\nMeasuring errors (SSIM {'on' if compute_ssim else 'off'})...",
+          flush=True)
+    mse_base, ssim_base, mse_pert, ssim_pert = measure_errors(
+        model, all_z_q, all_imgs, specs, args.levels, args.batch_size, device,
+        compute_ssim=compute_ssim)
+
+    # Bootstrap ratios
+    print("\nBootstrapping ratios...", flush=True)
+    mse_ratios = []
+    ssim_ratios = []
+    for k in range(len(specs)):
+        mse_ratios.append(bootstrap_ratio(mse_base, mse_pert[k], B=args.bootstrap_samples))
+        if compute_ssim:
+            # Use (1 - SSIM) as "distance"; baseline usually small positive.
+            d_base = np.clip(1.0 - ssim_base, 1e-6, None)
+            d_pert = np.clip(1.0 - ssim_pert[k], 1e-6, None)
+            ssim_ratios.append(bootstrap_ratio(d_base, d_pert, B=args.bootstrap_samples))
+
+    # Dim weights from single-dim +1 MSE ratios
+    n_dims = len(args.levels)
+    single_one_idx = {}
+    for i, spec in enumerate(specs):
+        nz = spec.nonzero_steps()
+        if len(nz) == 1 and nz[0][1] == 1:
+            single_one_idx[nz[0][0]] = i
+    dim_ratio_means = np.array(
+        [mse_ratios[single_one_idx[d]][0] for d in range(n_dims)])
+    dim_weights = (dim_ratio_means / dim_ratio_means.mean()).tolist()
+
+    # Reports
+    print(f"\n== Dim weights (from +1 step MSE ratios, 95% CI) ==", flush=True)
+    for d in range(n_dims):
+        r, lo, hi = mse_ratios[single_one_idx[d]]
+        print(f"  dim{d}  {r:.3f}x  [{lo:.3f}, {hi:.3f}]")
+    print(f"Normalized dim_weights: {[round(w, 3) for w in dim_weights]}")
+
+    print(f"\n== Perturbation ratios ==")
+    header = f"{'Perturbation':<30} {'MSE':>9} {'95% CI':>18}"
+    if compute_ssim:
+        header += f"   {'(1-SSIM)':>9} {'95% CI':>18}"
+    print(header)
+    print("-" * len(header))
+    for k, spec in enumerate(specs):
+        r, lo, hi = mse_ratios[k]
+        line = f"{spec.name:<30} {r:>8.3f}x [{lo:>5.2f}, {hi:>5.2f}]"
+        if compute_ssim:
+            r2, lo2, hi2 = ssim_ratios[k]
+            line += f"   {r2:>8.3f}x [{lo2:>5.2f}, {hi2:>5.2f}]"
+        print(line)
+
+    # Qualitative compounding note (L1 vs L2)
+    single_plus_one = {d: mse_ratios[single_one_idx[d]][0] for d in range(n_dims)}
+    add_errs, mul_errs = [], []
+    for k in range(2, n_dims + 1):
+        for combo in combinations(range(n_dims), k):
+            for i, spec in enumerate(specs):
+                nz = spec.nonzero_steps()
+                if set(d for d, _ in nz) == set(combo) and all(s == 1 for _, s in nz):
+                    measured = mse_ratios[i][0]
+                    add_pred = sum(single_plus_one[d] - 1 for d in combo) + 1
+                    mul_pred = 1.0
+                    for d in combo:
+                        mul_pred *= single_plus_one[d]
+                    add_errs.append(abs(measured - add_pred) / measured)
+                    mul_errs.append(abs(measured - mul_pred) / measured)
+                    break
+    if add_errs:
+        avg_add = 100 * sum(add_errs) / len(add_errs)
+        avg_mul = 100 * sum(mul_errs) / len(mul_errs)
+        print(f"\nCompounding: additive err {avg_add:.1f}%, multiplicative err {avg_mul:.1f}% "
+              f"(qualitative: {'L1' if avg_add < avg_mul else 'L2'} favored)")
+
+    # Fit kernels under MSE similarity and SSIM similarity
+    seeds = list(range(42, 42 + args.n_seeds))
+    mse_sim = np.array([1.0 / max(r[0], 1e-8) for r in mse_ratios])
+    ssim_sim = (np.array([1.0 / max(r[0], 1e-8) for r in ssim_ratios])
+                if compute_ssim else None)
+
+    metric_sims = {'mse': mse_sim}
+    if compute_ssim:
+        metric_sims['ssim'] = ssim_sim
+
+    results = {}
+    for metric_name, sim in metric_sims.items():
+        print(f"\n== Kernel comparison ({metric_name.upper()} similarity) ==")
+        print(f"{'Kernel':<18} {'Params':<52} {'Fit MSE':>10} {'CV MSE':>10} {'AIC':>10}")
+        print("-" * 102)
+        results[metric_name] = {}
+        for kernel in args.kernels:
+            res = multi_seed_fit(kernel, specs, sim, dim_weights, seeds)
+            aic_val = aic(res['params_mean'], res['fit_mse'], len(specs))
+            results[metric_name][kernel] = {
+                'params_mean': res['params_mean'].tolist(),
+                'params_std': res['params_std'].tolist(),
+                'fit_mse': res['fit_mse'],
+                'cv_mse': res['cv_mse'],
+                'aic': float(aic_val),
+            }
+            params_str = format_params(res['params_mean'], res['params_std'])
+            print(f"{kernel:<18} {params_str:<52} {res['fit_mse']:>10.2e} "
+                  f"{res['cv_mse']:>10.2e} {aic_val:>10.2f}")
+        best = min(
+            ((k, v) for k, v in results[metric_name].items() if isinstance(v, dict)),
+            key=lambda kv: kv[1]['cv_mse'],
+        )
+        print(f">> Best ({metric_name.upper()}) by CV MSE: {best[0]}")
+        results[metric_name]['best'] = best[0]
+
+    # Recommendations
+    print(f"\n== Recommendations ==")
+    dw_str = " ".join(f"{w:.2f}" for w in dim_weights)
+    for metric_name, metric_res in results.items():
+        best_name = metric_res['best']
+        best_res = metric_res[best_name]
+        if best_name == 'aniso_gaussian':
+            sigma_flag = "--fsq-sigma-d " + " ".join(
+                f"{s:.3f}" for s in best_res['params_mean'])
+        else:
+            sigma_flag = f"--fsq-sigma {best_res['params_mean'][0]:.3f}"
+        print(f"{metric_name.upper()}-best:")
+        print(f"  --fsq-kernel {best_name} {sigma_flag} "
+              f"--fsq-dim-weights {dw_str}")
+
+    print()
+    print("Note: --label-smoothing (epsilon) is a regularization hyperparameter")
+    print("and must be chosen by ablation, not derived from encoder statistics.")
+
+    # JSON dump
+    json_out = args.json_out or str(Path(args.checkpoint).parent / "fsq_sensitivity.json")
+    summary = {
+        'checkpoint': args.checkpoint,
+        'levels': args.levels,
+        'n_frames': int(len(all_z_q)),
+        'n_perturbations': len(specs),
+        'dim_weights': [float(w) for w in dim_weights],
+        'perturbations': {
+            spec.name: {
+                'mse': {'mean': float(mse_ratios[k][0]),
+                        'ci_lo': float(mse_ratios[k][1]),
+                        'ci_hi': float(mse_ratios[k][2])},
+                **({'ssim_distance': {'mean': float(ssim_ratios[k][0]),
+                                       'ci_lo': float(ssim_ratios[k][1]),
+                                       'ci_hi': float(ssim_ratios[k][2])}}
+                   if compute_ssim else {}),
+            }
+            for k, spec in enumerate(specs)
+        },
+        'kernels': results,
+    }
+    Path(json_out).parent.mkdir(parents=True, exist_ok=True)
+    with open(json_out, 'w') as f:
+        json.dump(summary, f, indent=2)
+    print(f"\nJSON summary written to {json_out}")
+
+
+# -------- Self-test --------
+
+def run_self_test():
+    """Verify build_structured_smooth_targets(kernel='gaussian') preserves
+    backward compatibility with the pre-upgrade implementation.
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from scripts.train_transformer import build_structured_smooth_targets
+    levels = [5, 5, 5, 5]
+    full_vocab = 625 + 2
+    # Default kernel should be 'gaussian' and output should equal pre-upgrade
+    out = build_structured_smooth_targets(
+        levels=levels, full_vocab_size=full_vocab,
+        sigma=0.9, smoothing=0.1, dim_weights=[1.0, 1.0, 1.0, 1.0])
+    assert out.shape == (full_vocab, full_vocab)
+    row_sums = out.sum(dim=-1)
+    assert torch.allclose(row_sums, torch.ones(full_vocab), atol=1e-4), row_sums
+    for i in range(625, 627):
+        assert out[i, i].item() == 1.0
+    # Diag visual mass
+    for i in range(3):
+        assert abs(out[i, i].item() - 0.9) < 1e-6, out[i, i].item()
+    # Explicit kernel='laplace' should differ from gaussian
+    out_l = build_structured_smooth_targets(
+        levels=levels, full_vocab_size=full_vocab,
+        sigma=0.9, smoothing=0.1, dim_weights=[1.0, 1.0, 1.0, 1.0],
+        kernel='laplace')
+    diff = (out[:625, :625] - out_l[:625, :625]).abs().sum().item()
+    assert diff > 1.0, f"Laplace kernel too close to Gaussian (diff={diff})"
+    print("Self-test passed: gaussian preserves backward compat, laplace differs.")
+
+
+# -------- CLI --------
+
 def main():
     parser = argparse.ArgumentParser(description="FSQ codebook sensitivity analysis")
     parser.add_argument("--checkpoint", default="checkpoints/fsq_best.pt")
@@ -50,275 +572,25 @@ def main():
     parser.add_argument("--expert-episodes-dir", default="data/expert_episodes")
     parser.add_argument("--max-frames", type=int, default=5000)
     parser.add_argument("--batch-size", type=int, default=256)
+    parser.add_argument("--bootstrap-samples", type=int, default=500)
+    parser.add_argument("--n-seeds", type=int, default=3)
+    parser.add_argument("--kernels", nargs="+",
+                        default=["gaussian", "laplace", "cauchy", "aniso_gaussian"])
+    parser.add_argument("--no-ssim", action="store_true",
+                        help="Skip SSIM (MSE-only; faster)")
+    parser.add_argument("--json-out", default=None,
+                        help="Path for JSON summary (default: alongside checkpoint)")
+    parser.add_argument("--self-test", action="store_true",
+                        help="Run internal sanity checks and exit")
     args = parser.parse_args()
 
+    if args.self_test:
+        run_self_test()
+        return
+
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    # Load model
-    model = FSQVAE(levels=args.levels)
-    state = torch.load(args.checkpoint, map_location=device, weights_only=True)
-    state = {k.removeprefix("_orig_mod."): v for k, v in state.items()}
-    model.load_state_dict(state)
-    model.to(device)
-    model.eval()
-
-    # Load data
-    print("Loading validation frames...")
-    frames = load_val_frames(
-        args.episodes_dir, args.expert_episodes_dir, args.max_frames
-    )
-    print(f"Loaded {len(frames)} frames")
-
-    # Encode all frames to get quantized codes and pre-quantization latents
-    all_z_q = []  # (B, D, 8, 8) quantized codes
-    all_z_e = []  # (B, D, 8, 8) pre-quantization (continuous)
-    all_imgs = []  # (B, 1, 64, 64) original images
-
-    with torch.no_grad():
-        for i in range(0, len(frames), args.batch_size):
-            batch = torch.from_numpy(
-                frames[i:i + args.batch_size].astype(np.float32) / 255.0
-            ).unsqueeze(1).to(device)
-            z_e = model.encoder(batch)
-            z_q, _ = model.fsq(z_e)
-            # Get bounded continuous values (before rounding)
-            fsq = model.fsq
-            half = fsq.half_levels.view(1, -1, 1, 1)
-            z_bounded = torch.tanh(z_e) * half
-            all_z_e.append(z_bounded.cpu())
-            all_z_q.append(z_q.cpu())
-            all_imgs.append(batch.cpu())
-
-    all_z_q = torch.cat(all_z_q)  # (N, D, 8, 8)
-    all_z_e = torch.cat(all_z_e)  # (N, D, 8, 8)
-    all_imgs = torch.cat(all_imgs)  # (N, 1, 64, 64)
-
-    n_dims = len(args.levels)
-    half_levels = torch.tensor([L // 2 for L in args.levels], dtype=torch.float32)
-
-    # Baseline reconstruction MSE
-    with torch.no_grad():
-        baseline_mse = 0.0
-        for i in range(0, len(all_z_q), args.batch_size):
-            z_q = all_z_q[i:i + args.batch_size].to(device)
-            recon = model.decoder(z_q)
-            orig = all_imgs[i:i + args.batch_size].to(device)
-            baseline_mse += ((recon - orig) ** 2).sum().item()
-        baseline_mse /= len(all_z_q)
-
-    print(f"\nBaseline reconstruction MSE: {baseline_mse:.6f}")
-    print()
-
-    # Define perturbation experiments: all non-empty subsets of dims, +1 step
-    from itertools import combinations
-
-    experiments = []
-
-    # Single dim +1 and +2
-    for d in range(n_dims):
-        for step in [1, 2]:
-            experiments.append((f"dim{d}(L={args.levels[d]}) +{step}", [(d, step)]))
-
-    # All multi-dim combos at +1 step (2-dim, 3-dim, 4-dim)
-    for k in range(2, n_dims + 1):
-        for combo in combinations(range(n_dims), k):
-            name = "+".join(f"d{d}" for d in combo) + " +1"
-            experiments.append((name, [(d, 1) for d in combo]))
-
-    def run_perturbation(all_z_q, all_imgs, perturbations):
-        """Apply perturbations and measure MSE."""
-        perturbed_z_q = all_z_q.clone()
-        for d, step in perturbations:
-            half = half_levels[d]
-            max_val = half - (1.0 - args.levels[d] % 2)
-            min_val = -half
-            vals = perturbed_z_q[:, d]
-            can_up = vals + step <= max_val
-            can_down = vals - step >= min_val
-            rand_up = torch.rand_like(vals) > 0.5
-            go_up = torch.where(can_up & can_down, rand_up,
-                                torch.where(can_up, torch.ones_like(rand_up),
-                                            torch.zeros_like(rand_up)))
-            can_any = can_up | can_down
-            delta = torch.where(go_up, step, -step) * can_any.float()
-            perturbed_z_q[:, d] = vals + delta
-
-        with torch.no_grad():
-            mse = 0.0
-            for i in range(0, len(perturbed_z_q), args.batch_size):
-                z_q = perturbed_z_q[i:i + args.batch_size].to(device)
-                recon = model.decoder(z_q)
-                orig = all_imgs[i:i + args.batch_size].to(device)
-                mse += ((recon - orig) ** 2).sum().item()
-            mse /= len(perturbed_z_q)
-        return mse
-
-    print(f"{'Perturbation':<30} {'MSE':>10} {'Delta':>10} {'Ratio':>8}")
-    print("-" * 62)
-
-    results = {}
-    for name, perturbations in experiments:
-        mse = run_perturbation(all_z_q, all_imgs, perturbations)
-        delta = mse - baseline_mse
-        ratio = mse / baseline_mse
-        results[name] = (mse, delta, ratio)
-        print(f"{name:<30} {mse:10.6f} {delta:+10.6f} {ratio:8.2f}x")
-
-    # Compounding analysis: compare measured multi-dim ratios against
-    # additive (sum of deltas) and multiplicative (product of ratios) predictions
-    print()
-    print("=" * 72)
-    print("Compounding analysis (+1 step combos)")
-    print(f"{'Combo':<20} {'Measured':>8} {'Additive':>10} {'Multiplic':>10} {'Best fit':>10}")
-    print("-" * 62)
-
-    # Collect single-dim +1 results
-    single = {}
-    for d in range(n_dims):
-        key = f"dim{d}(L={args.levels[d]}) +1"
-        single[d] = results[key]  # (mse, delta, ratio)
-
-    add_errors = []
-    mul_errors = []
-
-    for k in range(2, n_dims + 1):
-        for combo in combinations(range(n_dims), k):
-            key = "+".join(f"d{d}" for d in combo) + " +1"
-            measured_ratio = results[key][2]
-
-            # Additive: sum of deltas / baseline + 1
-            add_pred = sum(single[d][1] for d in combo) / baseline_mse + 1.0
-            # Multiplicative: product of ratios
-            mul_pred = 1.0
-            for d in combo:
-                mul_pred *= single[d][2]
-
-            add_err = abs(measured_ratio - add_pred) / measured_ratio
-            mul_err = abs(measured_ratio - mul_pred) / measured_ratio
-            add_errors.append(add_err)
-            mul_errors.append(mul_err)
-
-            best = "additive" if add_err < mul_err else "multiplic"
-            print(f"{key:<20} {measured_ratio:8.2f}x {add_pred:9.2f}x {mul_pred:9.2f}x {best:>10}")
-
-    print()
-    avg_add = sum(add_errors) / len(add_errors) * 100
-    avg_mul = sum(mul_errors) / len(mul_errors) * 100
-    print(f"Mean relative error:  additive={avg_add:.1f}%  multiplicative={avg_mul:.1f}%")
-    if avg_add < avg_mul:
-        print("=> Perturbations compound ADDITIVELY (use L1/Manhattan distance)")
-    else:
-        print("=> Perturbations compound MULTIPLICATIVELY (use L2/Euclidean distance)")
-
-    # Sigma sweep: find optimal sigma for weighted L2 Gaussian kernel
-    # Ground truth: 1/ratio = reconstruction similarity (higher = more similar)
-    # Gaussian prediction: exp(-weighted_dist^2 / (2*sigma^2))
-    # We want the sigma where kernel weights best correlate with 1/ratio
-    print()
-    print("=" * 72)
-    print("Sigma sweep (weighted L2 distance)")
-
-    # Measured sensitivities as dim weights (normalized so mean=1)
-    single_ratios = [single[d][2] for d in range(n_dims)]
-    mean_ratio = sum(single_ratios) / n_dims
-    dim_weights = [r / mean_ratio for r in single_ratios]
-    print(f"Dim weights (from sensitivity): {[f'{w:.3f}' for w in dim_weights]}")
-
-    # Collect all +1 step combos with their measured ratios and weighted L2 distances
-    combo_data = []
-    for k in range(1, n_dims + 1):
-        for combo in combinations(range(n_dims), k):
-            if k == 1:
-                key = f"dim{combo[0]}(L={args.levels[combo[0]]}) +1"
-            else:
-                key = "+".join(f"d{d}" for d in combo) + " +1"
-            measured_ratio = results[key][2]
-            # Weighted L2 distance: sqrt(sum(w_d^2)) for +1 step in each dim
-            w_sq_dist = sum(dim_weights[d] ** 2 for d in combo)
-            similarity = 1.0 / measured_ratio
-            combo_data.append((key, w_sq_dist, similarity, measured_ratio))
-
-    print()
-    print(f"{'Sigma':>6}  {'Corr':>7}  {'MSE':>10}  Notes")
-    print("-" * 42)
-
-    best_sigma = 0.0
-    best_mse = float("inf")
-    for sigma_test in [x * 0.1 for x in range(1, 31)]:
-        # Predict similarity as Gaussian kernel value
-        predictions = []
-        targets = []
-        for _, w_sq_dist, similarity, _ in combo_data:
-            pred = np.exp(-w_sq_dist / (2 * sigma_test ** 2))
-            predictions.append(pred)
-            targets.append(similarity)
-        # Normalize both to [0, 1] for fair comparison
-        pred_arr = np.array(predictions)
-        tgt_arr = np.array(targets)
-        # Pearson correlation
-        if pred_arr.std() > 1e-8:
-            corr = np.corrcoef(pred_arr, tgt_arr)[0, 1]
-        else:
-            corr = 0.0
-        # MSE between normalized predictions and targets
-        pred_norm = pred_arr / pred_arr.sum()
-        tgt_norm = tgt_arr / tgt_arr.sum()
-        mse_fit = ((pred_norm - tgt_norm) ** 2).mean()
-        marker = ""
-        if mse_fit < best_mse:
-            best_mse = mse_fit
-            best_sigma = sigma_test
-            marker = " <-- best"
-        print(f"{sigma_test:6.1f}  {corr:7.4f}  {mse_fit:10.6f}{marker}")
-
-    print()
-    print(f"Optimal sigma: {best_sigma:.1f}")
-    print(f"Recommended: --fsq-sigma {best_sigma:.1f} "
-          f"--fsq-dim-weights {' '.join(f'{w:.2f}' for w in dim_weights)}")
-
-    # Quantization margin analysis: estimate natural label smoothing epsilon
-    # The FSQ rounds z_bounded to the nearest integer. The "margin" is how
-    # close z_bounded was to rounding differently. Small margin = ambiguous token.
-    print()
-    print("=" * 72)
-    print("Quantization margin analysis (natural label smoothing epsilon)")
-
-    # z_bounded is continuous, z_q is rounded. Margin = |z_bounded - z_q|
-    # per dimension per position. Range is [0, 0.5] (0 = exactly on boundary,
-    # 0.5 = dead center of a level).
-    margin = (all_z_e - all_z_q).abs()  # (N, D, 8, 8)
-
-    # A token is "ambiguous" if ANY dimension has margin < threshold
-    # (it could have rounded to a different code)
-    print(f"\n{'Threshold':<12} {'Ambiguous%':>10} {'Per-dim margins':>40}")
-    print("-" * 65)
-
-    per_dim_means = [margin[:, d].mean().item() for d in range(n_dims)]
-    print(f"{'(mean)':>12} {'':>10} "
-          f"{' '.join(f'd{d}={m:.3f}' for d, m in enumerate(per_dim_means)):>40}")
-
-    for threshold in [0.05, 0.10, 0.15, 0.20, 0.25, 0.30]:
-        # Token is ambiguous if any dim has margin below threshold
-        close_any_dim = (margin < threshold).any(dim=1)  # (N, 8, 8)
-        ambiguous_frac = close_any_dim.float().mean().item()
-        # Per-dim breakdown
-        per_dim = [(margin[:, d] < threshold).float().mean().item() for d in range(n_dims)]
-        per_dim_str = " ".join(f"d{d}={v:.1%}" for d, v in enumerate(per_dim))
-        print(f"{threshold:<12.2f} {ambiguous_frac:>9.1%} {per_dim_str:>40}")
-
-    # Recommended epsilon: fraction of tokens within margin 0.25
-    # (halfway to the next level = coin flip territory)
-    ambig_025 = (margin < 0.25).any(dim=1).float().mean().item()
-    print(f"\nRecommended --label-smoothing {ambig_025:.2f}")
-    print(f"  (fraction of tokens with any dim within 0.25 of a boundary)")
-
-    # Full recommendation
-    print()
-    print("=" * 72)
-    print("Full recommendation:")
-    print(f"  --fsq-sigma {best_sigma:.1f} "
-          f"--fsq-dim-weights {' '.join(f'{w:.2f}' for w in dim_weights)} "
-          f"--label-smoothing {ambig_025:.2f}")
+    print(f"Device: {device}", flush=True)
+    run_analysis(args, device)
 
 
 if __name__ == "__main__":

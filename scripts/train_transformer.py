@@ -31,20 +31,22 @@ def _unwrap(model):
 
 
 def build_structured_smooth_targets(levels, full_vocab_size, sigma=1.0, smoothing=0.1,
-                                    dim_weights=None):
+                                    dim_weights=None, kernel="gaussian"):
     """Precompute FSQ-structured soft target distributions.
 
-    Visual tokens (0..prod(levels)-1): Gaussian kernel over weighted squared
-    FSQ coordinate distance. Status tokens (ALIVE, DEATH): hard targets.
+    Visual tokens (0..prod(levels)-1): one of four kernels over weighted FSQ
+    coordinate distance. Status tokens (ALIVE, DEATH): hard targets.
 
     Args:
         levels: FSQ quantization levels, e.g. [8, 5, 5, 5].
-        full_vocab_size: Total vocab including status tokens (1002).
-        sigma: Gaussian kernel width. Controls how fast tolerance decays.
+        full_vocab_size: Total vocab including status tokens.
+        sigma: Kernel bandwidth. For kernel='aniso_gaussian', a list/tuple of
+            length len(levels) with per-dim bandwidths. Otherwise a scalar.
         smoothing: Total probability mass redistributed from correct token.
         dim_weights: Per-dimension distance weights from sensitivity analysis.
             Higher weight = more sensitive dim = neighbors further apart.
             If None, all dimensions weighted equally.
+        kernel: One of 'gaussian', 'laplace', 'cauchy', 'aniso_gaussian'.
 
     Returns:
         soft_targets: (full_vocab_size, full_vocab_size) float tensor.
@@ -69,15 +71,30 @@ def build_structured_smooth_targets(levels, full_vocab_size, sigma=1.0, smoothin
             coords[idx, d] = remainder // divisors[d]
             remainder = remainder % divisors[d]
 
-    # Pairwise weighted squared Euclidean distance in FSQ coordinate space
+    # Pairwise weighted distance components in FSQ coordinate space
     diff = coords.unsqueeze(1) - coords.unsqueeze(0)  # (V, V, D)
     if dim_weights is not None:
-        w = torch.tensor(dim_weights, dtype=torch.float32)  # (D,)
+        w = torch.tensor(dim_weights, dtype=torch.float32)
         diff = diff * w.view(1, 1, -1)
-    sq_dist = (diff ** 2).sum(dim=-1)  # (V, V)
 
-    # Gaussian kernel weights (zero on diagonal — handled separately)
-    weights = torch.exp(-sq_dist / (2 * sigma ** 2))
+    if kernel == "gaussian":
+        sq_dist = (diff ** 2).sum(dim=-1)
+        weights = torch.exp(-sq_dist / (2.0 * float(sigma) ** 2))
+    elif kernel == "laplace":
+        abs_dist = diff.abs().sum(dim=-1)
+        weights = torch.exp(-abs_dist / float(sigma))
+    elif kernel == "cauchy":
+        sq_dist = (diff ** 2).sum(dim=-1)
+        weights = 1.0 / (1.0 + sq_dist / (float(sigma) ** 2))
+    elif kernel == "aniso_gaussian":
+        sigma_d = torch.tensor(sigma, dtype=torch.float32)
+        if sigma_d.numel() != n_dims:
+            raise ValueError(
+                f"aniso_gaussian needs sigma of length {n_dims}, got {sigma_d.numel()}")
+        per = (diff / sigma_d.view(1, 1, -1)) ** 2
+        weights = torch.exp(-per.sum(dim=-1) / 2.0)
+    else:
+        raise ValueError(f"unknown kernel: {kernel}")
     weights.fill_diagonal_(0)
 
     # Normalize each row to sum to 1, then scale by smoothing
@@ -375,7 +392,16 @@ def main():
                         help="FSQ quantization levels (must match tokenizer)")
     parser.add_argument("--label-smoothing", type=float, default=None)
     parser.add_argument("--fsq-sigma", type=float, default=None,
-                        help="Gaussian kernel width for structured label smoothing (0 = uniform)")
+                        help="Kernel bandwidth for structured label smoothing "
+                             "(scalar; used for gaussian/laplace/cauchy; 0 = uniform)")
+    parser.add_argument("--fsq-sigma-d", type=float, nargs="+", default=None,
+                        help="Per-dimension bandwidths for kernel=aniso_gaussian "
+                             "(must match len(fsq_levels))")
+    parser.add_argument("--fsq-kernel", choices=["gaussian", "laplace", "cauchy",
+                                                  "aniso_gaussian"],
+                        default=None,
+                        help="Kernel family for structured label smoothing "
+                             "(default: gaussian)")
     parser.add_argument("--fsq-dim-weights", type=float, nargs="+", default=None,
                         help="Per-dimension distance weights for structured smoothing")
     parser.add_argument("--focal-gamma", type=float, default=None)
@@ -569,17 +595,28 @@ def main():
         neighbor_table, neighbor_counts = None, None
 
     # Build structured label smoothing matrix
-    if args.fsq_sigma > 0 and args.label_smoothing > 0:
+    kernel = args.fsq_kernel or "gaussian"
+    if kernel == "aniso_gaussian":
+        sigma_arg = args.fsq_sigma_d
+        has_bandwidth = sigma_arg is not None and all(s > 0 for s in sigma_arg)
+    else:
+        sigma_arg = args.fsq_sigma
+        has_bandwidth = sigma_arg is not None and sigma_arg > 0
+    if has_bandwidth and args.label_smoothing > 0:
         soft_target_matrix = build_structured_smooth_targets(
             args.fsq_levels, model.full_vocab_size,
-            sigma=args.fsq_sigma, smoothing=args.label_smoothing,
+            sigma=sigma_arg, smoothing=args.label_smoothing,
             dim_weights=args.fsq_dim_weights,
+            kernel=kernel,
         ).to(device)
         # Check how concentrated the smoothing mass is
         visual_row = soft_target_matrix[0, :model.vocab_size]
         top5 = visual_row.topk(6).values  # includes self
         w_str = f", dim_weights={args.fsq_dim_weights}" if args.fsq_dim_weights else ""
-        print(f"Structured label smoothing: σ={args.fsq_sigma}, ε={args.label_smoothing}{w_str}")
+        sigma_str = (f"[{', '.join(f'{s:.3f}' for s in sigma_arg)}]"
+                     if kernel == "aniso_gaussian" else f"{sigma_arg}")
+        print(f"Structured label smoothing: kernel={kernel}, σ={sigma_str}, "
+              f"ε={args.label_smoothing}{w_str}")
         print(f"  Top-6 target probs for token 0: {top5.tolist()}")
     else:
         soft_target_matrix = None
