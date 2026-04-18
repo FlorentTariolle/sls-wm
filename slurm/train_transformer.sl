@@ -35,10 +35,21 @@ RESUME_FLAG="$CKPT_DIR/.resume_transformer"
 
 handle_timeout() {
     echo "=== USR1 received ($(date)), saving and resubmitting ==="
+    # Persist resume intent BEFORE waiting for the child: if Python's save
+    # overruns the grace period and we get hard-killed, a fresh submit will
+    # still pick up --resume from the flag.
+    mkdir -p "$CKPT_DIR"
+    touch "$RESUME_FLAG"
     kill -TERM "$TRAIN_PID" 2>/dev/null
     wait "$TRAIN_PID"
-    touch "$RESUME_FLAG"
-    scontrol requeue "$SLURM_JOB_ID" || sbatch "$0" "$CONFIG"
+    echo "=== Requeuing job $SLURM_JOB_ID ==="
+    if scontrol requeue "$SLURM_JOB_ID"; then
+        echo "=== scontrol requeue succeeded ==="
+    else
+        rc=$?
+        echo "=== scontrol requeue failed (rc=$rc), falling back to sbatch ==="
+        sbatch "$0" "$CONFIG"
+    fi
     exit 0
 }
 trap handle_timeout USR1
