@@ -103,7 +103,7 @@ Benchmarked 11 configurations (all `torch.compile` modes × precisions) with sub
 | **Compile reduce-overhead + BF16** | **~314ms** | **6.48x** |
 | Compile max-autotune + BF16 | ~311ms | 6.55x |
 
-`reduce-overhead` is our default: max-autotune's extra ~1% gain does not justify the CUDA-graph autotuning failures we hit on new model code.
+`reduce-overhead` is our default -- best of both worlds: faster than `default` and without the ~2-minute autotune phase `max-autotune` adds at startup for only ~1% more steady-state throughput.
 
 ### Controller
 - **BC**: death + expert episodes, class-weighted BCE (1.5x jumps), early stopping
