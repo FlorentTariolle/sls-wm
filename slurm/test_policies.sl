@@ -10,6 +10,6 @@
 #SBATCH --time=00:10:00
 
 module purge
-module load aidl/pytorch/2.6.0-cuda12.6
+module load aidl/pytorch/2.10.0-py3.12-cuda12.6
 
 python -u scripts/test_hardcoded_policies.py

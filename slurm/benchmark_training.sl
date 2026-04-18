@@ -17,7 +17,7 @@
 # Results: cat slurm/logs/benchmark_training.out
 
 module purge
-module load aidl/pytorch/2.6.0-cuda12.6
+module load aidl/pytorch/2.10.0-py3.12-cuda12.6
 
 echo "=== Benchmark 512d (batch_size=512, matching real training) ==="
 python -u scripts/benchmark_training.py \

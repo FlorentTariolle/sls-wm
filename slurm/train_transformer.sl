@@ -54,7 +54,9 @@ trap handle_timeout USR1
 module purge
 module load aidl/pytorch/2.10.0-py3.12-cuda12.6
 export PATH="$HOME/.local/bin:$PATH"
-pip install --user wandb 2>/dev/null
+# wandb bundles gencode that expects protobuf >= 6.32; the torch 2.10
+# module ships protobuf 6.31, so upgrade it here on the compute node.
+pip install --user --upgrade wandb "protobuf>=6.32" 2>/dev/null
 
 # Tokenization is idempotent (skips already-tokenized episodes)
 echo "=== Step 1a: Tokenize death episodes ==="

@@ -16,9 +16,9 @@
 # Monitor: tail -f slurm/logs/train_controller_bc.out
 
 module purge
-module load aidl/pytorch/2.6.0-cuda12.6
+module load aidl/pytorch/2.10.0-py3.12-cuda12.6
 export PATH="$HOME/.local/bin:$PATH"
-pip install --user wandb 2>/dev/null
+pip install --user --upgrade wandb "protobuf>=6.32" 2>/dev/null
 
 echo "=== Train Controller (BC) ==="
 python -u scripts/train_controller_bc.py \
