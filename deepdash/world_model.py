@@ -910,17 +910,25 @@ class AdaLNSpaceTimeBlock(nn.Module):
         q, k = self.ln_q(q), self.ln_k(k)
         q = apply_rope(q, rope_cos, rope_sin)
         k = apply_rope(k, rope_cos, rope_sin)
-        # Q, K are now materialized by LN+RoPE into compact BHTD, but V is
-        # still a view into the fused QKV buffer with T-stride = 3*H*D.
-        # PyTorch 2.6's flash-attention backward (triggered by is_causal=True)
-        # mis-indexes V when its stride pattern differs from Q/K, causing an
-        # illegal memory access. Force V compact to match.
+        # Keep V materialized so it has a standard stride pattern rather
+        # than a view into the fused QKV buffer.
         v = v.contiguous()
 
         drop_p = self.attn_drop.p if self.training else 0.0
-        out = F.scaled_dot_product_attention(
-            q, k, v, is_causal=is_causal, dropout_p=drop_p,
-        ).transpose(1, 2).reshape(B_eff, T_attn, D)
+        # Skip the flash-attention SDPA backend. Its backward kernel crashes
+        # with "illegal memory access" under Inductor-compiled training when
+        # grad_out's physical layout (BTHD from transpose+reshape fusion)
+        # differs from Q/K/V's (BHTD after LN+RoPE materialization). CuDNN
+        # and memory-efficient attention tolerate the mismatch; the attention
+        # op is a small fraction of step time so the speed cost is minor.
+        with torch.nn.attention.sdpa_kernel([
+            torch.nn.attention.SDPBackend.CUDNN_ATTENTION,
+            torch.nn.attention.SDPBackend.EFFICIENT_ATTENTION,
+            torch.nn.attention.SDPBackend.MATH,
+        ]):
+            out = F.scaled_dot_product_attention(
+                q, k, v, is_causal=is_causal, dropout_p=drop_p,
+            ).transpose(1, 2).reshape(B_eff, T_attn, D)
         out = self.out_proj(out)
 
         # Reshape back to (B, T, D).
