@@ -1,7 +1,11 @@
-# DeepDash V5b candidate -- V4 + FSQ [5,5,5,5]
-# Smallest isotropic codebook: 625 codes, equal dim_weights.
-# All transformer/controller hyperparameters frozen at V4 values.
-# Checkpoints isolated in checkpoints_v5_baseline/ to preserve other artifacts.
+# DeepDash V5 isotropic-dim-weights ablation (former V5 baseline).
+# Was the V5 baseline until 2026-04-18, when the calibrated-dim-weights
+# variant (now v5.yaml, dim_weights [1.02, 0.94, 0.83, 1.20]) was promoted
+# on the basis of slightly better loss/acc/recall (train and val), smoother
+# training, and parity-or-better dream rollouts. This config is kept for
+# the paper's SLS ablation row (calibrated vs isotropic dim_weights on the
+# [5,5,5,5] codebook).
+# Checkpoints in checkpoints_v5_baseline/ (shared FSQ + isotropic transformer).
 
 # Shared model architecture
 model:

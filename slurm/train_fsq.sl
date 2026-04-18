@@ -13,7 +13,7 @@
 # Auto-resumes from fsq_state.pt if a previous run was interrupted.
 #
 # Submit:  sbatch slurm/train_fsq.sl [config]
-# Example: sbatch slurm/train_fsq.sl configs/v5b.yaml
+# Example: sbatch slurm/train_fsq.sl configs/v5.yaml
 # Monitor: tail -f slurm/logs/train_fsq.out
 
 CONFIG=${1:-configs/v5.yaml}

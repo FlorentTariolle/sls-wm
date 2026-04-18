@@ -1,8 +1,8 @@
 # V5 baseline (FSQ [5,5,5,5]) full local training on RTX 2060 SUPER (8 GB).
-# Inherits architecture from v5b.yaml. Overrides target local HW + applies the
+# Inherits architecture from v5.yaml. Overrides target local HW + applies the
 # new augmentation stack (K=1 random shift per epoch, pixel noise, brightness/contrast).
 
-# Shared model architecture (same as v5b.yaml)
+# Shared model architecture (same as v5.yaml)
 model:
   vocab_size: 625
   embed_dim: 512
@@ -41,4 +41,4 @@ fsq:
   # lr_schedule defaults to cosine
 
 # Transformer / controller sections omitted — this config is FSQ-only for now.
-# Add later by copying from v5b.yaml with local batch/num_workers adjustments.
+# Add later by copying from v5.yaml with local batch/num_workers adjustments.

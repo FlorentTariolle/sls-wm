@@ -15,7 +15,7 @@
 # the trap saves checkpoint and resubmits the job.
 #
 # Submit:  sbatch slurm/train_transformer.sl [config]
-# Example: sbatch slurm/train_transformer.sl configs/v5b.yaml
+# Example: sbatch slurm/train_transformer.sl configs/v5.yaml
 # Monitor: tail -f slurm/logs/train_transformer.out
 
 CONFIG=${1:-configs/v5.yaml}

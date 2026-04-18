@@ -1,11 +1,18 @@
-# DeepDash V5b + calibrated dim_weights -- one-knob ablation over V5 baseline.
-# Identical to v5b.yaml except:
-#   - fsq_dim_weights: [1.02, 0.94, 0.83, 1.20] from fsq_sensitivity.py
-#     (measured on 5000 val frames of checkpoints_v5_baseline/fsq_best.pt,
-#      ~50 perturbations, 500 bootstrap samples, 3 seeds)
-#   - transformer/BC/PPO checkpoint_dir isolated to preserve V5 baseline artifacts
-# FSQ is re-used from the baseline (no retraining needed).
-# Kernel stays gaussian, sigma stays 0.9 — only dim_weights are being swept.
+# DeepDash V5 baseline (current headline, 2026-04-18).
+# FSQ [5,5,5,5] + Transformer with calibrated dim_weights
+# [1.02, 0.94, 0.83, 1.20] measured by scripts/fsq_sensitivity.py on 5000
+# val frames of checkpoints_v5_baseline/fsq_best.pt (~50 perturbations, 500
+# bootstrap samples, 3 seeds).
+#
+# Promoted from the former isotropic-dim-weights baseline (now
+# v5-isotropic.yaml) on the basis of: slightly better loss/acc/recall
+# (train and val), smoother training with no NaN-spike recoveries, dream
+# rollouts at parity or marginally better, earlier convergence
+# (epoch 168 vs 194).
+#
+# Shared FSQ lives in checkpoints_v5_baseline/ (unchanged). Transformer +
+# controller weights for this baseline live in checkpoints_v5_dimweights/.
+# Kernel gaussian, sigma 0.9, epsilon 0.1 (unchanged from V5 conventions).
 
 # Shared model architecture
 model:
@@ -19,7 +26,7 @@ model:
   dropout: 0.15
   adaln: true
 
-# FSQ-VAE training (unchanged; re-uses v5_baseline FSQ)
+# FSQ-VAE training (unchanged; re-uses shared v5 FSQ)
 fsq:
   episodes_dir: data/death_episodes
   expert_episodes_dir: data/expert_episodes
@@ -54,24 +61,24 @@ transformer:
   steps_per_epoch: 500
   patience: 60
   seed: 42
-  checkpoint_dir: checkpoints_v5b_dimweights
+  checkpoint_dir: checkpoints_v5_dimweights
 
 # Controller -- behavioral cloning pretraining
 controller_bc:
   expert_episodes_dir: data/expert_episodes
-  transformer_checkpoint: checkpoints_v5b_dimweights/transformer_best.pt
+  transformer_checkpoint: checkpoints_v5_dimweights/transformer_best.pt
   epochs: 50
   batch_size: 512
   lr: 0.001
   weight_decay: 0.0001
   val_ratio: 0.1
   seed: 42
-  checkpoint_dir: checkpoints_v5b_dimweights
+  checkpoint_dir: checkpoints_v5_dimweights
 
 # Controller -- PPO fine-tuning
 controller_ppo:
-  transformer_checkpoint: checkpoints_v5b_dimweights/transformer_best.pt
-  pretrained: checkpoints_v5b_dimweights/controller_bc_best.pt
+  transformer_checkpoint: checkpoints_v5_dimweights/transformer_best.pt
+  pretrained: checkpoints_v5_dimweights/controller_bc_best.pt
   amp_dtype: bfloat16
   n_iterations: 50000
   n_episodes: 512
@@ -90,4 +97,4 @@ controller_ppo:
   n_eval_episodes: 512
   eval_interval: 10
   seed: 42
-  checkpoint_dir: checkpoints_v5b_dimweights
+  checkpoint_dir: checkpoints_v5_dimweights

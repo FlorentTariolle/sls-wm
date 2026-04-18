@@ -7,7 +7,7 @@ Each config runs in a subprocess for clean CUDA state.
 
 Usage:
     python scripts/benchmark_fsq_training.py
-    python scripts/benchmark_fsq_training.py --config configs/v5b-local.yaml \\
+    python scripts/benchmark_fsq_training.py --config configs/v5-local.yaml \\
         --batch-size 512 --warmup 3 --steps 10
 """
 
