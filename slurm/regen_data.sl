@@ -2,8 +2,8 @@
 #SBATCH -J "regen_data"
 #SBATCH -o slurm/logs/regen_data.out
 #SBATCH -e slurm/logs/regen_data.err
-#SBATCH -p ar_a100
-#SBATCH --gres=gpu:a100_3g.20gb:1
+#SBATCH -p ar_mig
+#SBATCH --gres=gpu:a100_2g.20gb:1
 #SBATCH -n 1
 #SBATCH --cpus-per-gpu 4
 #SBATCH --mem 32G
