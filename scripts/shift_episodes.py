@@ -83,14 +83,15 @@ def process_directory(episodes_dir, shifts_v):
 
             np.save(aug_dir / "frames.npy", shifted)
 
-            # Link actions.npy from base episode
+            # Link actions.npy from base episode. Use a RELATIVE target so
+            # the symlink survives renames/moves of the parent tree.
             dst = aug_dir / "actions.npy"
             if not dst.exists():
-                src = (ep / "actions.npy").resolve()
+                src_rel = Path(os.path.relpath(ep / "actions.npy", aug_dir))
                 try:
-                    os.symlink(src, dst)
+                    os.symlink(src_rel, dst)
                 except OSError:
-                    shutil.copy2(src, dst)
+                    shutil.copy2(ep / "actions.npy", dst)
 
             created += 1
 
