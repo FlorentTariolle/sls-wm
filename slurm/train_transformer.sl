@@ -40,16 +40,13 @@ handle_timeout() {
     # still pick up --resume from the flag.
     mkdir -p "$CKPT_DIR"
     touch "$RESUME_FLAG"
+    # Queue the resubmit immediately and unconditionally. With the cluster's
+    # 1-job-at-a-time policy, the new job sits in the queue until this one
+    # finishes saving — no race, no scontrol-requeue silent-failure path.
+    echo "=== Submitting resume job ==="
+    sbatch "$0" "$CONFIG"
     kill -TERM "$TRAIN_PID" 2>/dev/null
     wait "$TRAIN_PID"
-    echo "=== Requeuing job $SLURM_JOB_ID ==="
-    if scontrol requeue "$SLURM_JOB_ID"; then
-        echo "=== scontrol requeue succeeded ==="
-    else
-        rc=$?
-        echo "=== scontrol requeue failed (rc=$rc), falling back to sbatch ==="
-        sbatch "$0" "$CONFIG"
-    fi
     exit 0
 }
 trap handle_timeout USR1
