@@ -15,6 +15,17 @@ import sys
 import time
 from pathlib import Path
 
+# Persistent Inductor cache so compiled-kernel sources survive across
+# SLURM jobs (cluster wipes /tmp between jobs).
+os.environ.setdefault(
+    "TORCHINDUCTOR_CACHE_DIR",
+    str(Path.home() / ".cache" / "torchinductor"),
+)
+# Synchronous CUDA launches so crash stacktraces point at the real
+# faulting kernel. Debug-only: slows training; remove once v5-spacetime
+# is stable.
+os.environ.setdefault("CUDA_LAUNCH_BLOCKING", "1")
+
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from deepdash.wandb_utils import wandb_init, wandb_log, wandb_finish, wandb_run_id
 from deepdash.world_model import WorldModel
