@@ -910,6 +910,12 @@ class AdaLNSpaceTimeBlock(nn.Module):
         q, k = self.ln_q(q), self.ln_k(k)
         q = apply_rope(q, rope_cos, rope_sin)
         k = apply_rope(k, rope_cos, rope_sin)
+        # Q, K are now materialized by LN+RoPE into compact BHTD, but V is
+        # still a view into the fused QKV buffer with T-stride = 3*H*D.
+        # PyTorch 2.6's flash-attention backward (triggered by is_causal=True)
+        # mis-indexes V when its stride pattern differs from Q/K, causing an
+        # illegal memory access. Force V compact to match.
+        v = v.contiguous()
 
         drop_p = self.attn_drop.p if self.training else 0.0
         out = F.scaled_dot_product_attention(
