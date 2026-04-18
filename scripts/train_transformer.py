@@ -584,8 +584,12 @@ def main():
         try:
             import torch._inductor.config as inductor_cfg
             inductor_cfg.compile_threads = min(os.cpu_count() or 1, 8)
+            # Workaround for torch 2.6 cudagraph-tree + autotune illegal
+            # memory access seen on v5-spacetime backward. Keeps Inductor
+            # codegen, drops only cross-step graph reuse.
+            inductor_cfg.triton.cudagraph_trees = False
             model = torch.compile(model, mode="reduce-overhead")
-            print(f"torch.compile enabled (full model, {inductor_cfg.compile_threads} compile threads)")
+            print(f"torch.compile enabled (full model, {inductor_cfg.compile_threads} compile threads, cudagraph_trees=False)")
         except Exception as e:
             print(f"torch.compile not available, running eager: {e}")
     else:
