@@ -52,7 +52,7 @@ handle_timeout() {
 trap handle_timeout USR1
 
 module purge
-module load aidl/pytorch/2.6.0-cuda12.6
+module load aidl/pytorch/2.10.0-py3.12-cuda12.6
 export PATH="$HOME/.local/bin:$PATH"
 pip install --user wandb 2>/dev/null
 
